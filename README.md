@@ -12,6 +12,14 @@ yarn add react-native-mostly-good-metrics
 
 ### iOS
 
+Add the MostlyGoodMetrics pod source to your `ios/Podfile`:
+
+```ruby
+pod 'MostlyGoodMetrics', :git => 'https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk.git', :tag => '0.1.0'
+```
+
+Then run:
+
 ```bash
 cd ios && pod install
 ```
