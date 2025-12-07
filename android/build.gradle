@@ -57,5 +57,5 @@ repositories {
 dependencies {
     implementation "com.facebook.react:react-native:+"
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.21"
-    implementation "com.github.joshholtz.mostly-good-metrics:mostlygoodmetrics:main-SNAPSHOT"
+    implementation "com.github.joshholtz.mostly-good-metrics:mostlygoodmetrics:0.1.0"
 }

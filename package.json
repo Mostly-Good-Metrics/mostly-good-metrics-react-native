@@ -1,6 +1,6 @@
 {
   "name": "react-native-mostly-good-metrics",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "React Native SDK for MostlyGoodMetrics analytics",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
