@@ -16,5 +16,5 @@ Pod::Spec.new do |s|
   s.source_files = "ios/**/*.{h,m,mm,swift}"
 
   s.dependency "React-Core"
-  s.dependency "MostlyGoodMetrics", :git => "https://github.com/joshholtz/mostly-good-metrics.git", :branch => "main"
+  s.dependency "MostlyGoodMetrics", "~> 1.0"
 end
