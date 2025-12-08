@@ -11,44 +11,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout RN SDK
-        uses: actions/checkout@v4
-        with:
-          path: react-native-sdk
-
-      - name: Checkout JavaScript SDK
-        uses: actions/checkout@v4
-        with:
-          repository: Mostly-Good-Metrics/mostly-good-metrics-javascript
-          path: javascript-sdk
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install and build JS SDK
-        run: |
-          cd javascript-sdk
-          npm ci
-          npm run build
-
-      - name: Install RN SDK dependencies
-        run: |
-          cd react-native-sdk
-          npm ci
+      - name: Install dependencies
+        run: npm ci
 
       - name: Run tests
-        run: |
-          cd react-native-sdk
-          npm test
+        run: npm test
 
       - name: Type check
-        run: |
-          cd react-native-sdk
-          npm run typescript
+        run: npm run typescript
 
       - name: Build
-        run: |
-          cd react-native-sdk
-          npm run prepare
+        run: npm run prepare

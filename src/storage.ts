@@ -1,4 +1,4 @@
-import type { IEventStorage, MGMEvent } from 'mostly-good-metrics';
+import type { IEventStorage, MGMEvent } from '@mostly-good-metrics/javascript';
 
 const STORAGE_KEY = 'mostlygoodmetrics_events';
 const USER_ID_KEY = 'mostlygoodmetrics_user_id';

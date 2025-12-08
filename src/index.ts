@@ -6,7 +6,7 @@ import {
   type EventProperties,
   SystemEvents,
   SystemProperties,
-} from 'mostly-good-metrics';
+} from '@mostly-good-metrics/javascript';
 import { AsyncStorageEventStorage, persistence, getStorageType } from './storage';
 
 export type { MGMConfiguration, EventProperties };
