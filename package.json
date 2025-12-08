@@ -4,20 +4,15 @@
   "description": "React Native SDK for MostlyGoodMetrics analytics",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
-  "types": "lib/typescript/index.d.ts",
+  "types": "lib/typescript/src/index.d.ts",
   "react-native": "src/index",
   "source": "src/index",
   "files": [
     "src",
     "lib",
-    "android",
-    "ios",
-    "react-native-mostly-good-metrics.podspec",
     "!**/__tests__",
     "!**/__fixtures__",
-    "!**/__mocks__",
-    "!ios/build",
-    "!android/build"
+    "!**/__mocks__"
   ],
   "scripts": {
     "typescript": "tsc --noEmit",
@@ -46,7 +41,11 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
+  "dependencies": {
+    "mostly-good-metrics": "file:../javascript-sdk"
+  },
   "devDependencies": {
+    "@react-native-async-storage/async-storage": "^1.21.0",
     "@types/react": "^18.2.0",
     "@types/react-native": "^0.72.0",
     "del-cli": "^5.0.0",
@@ -56,6 +55,7 @@
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
+    "@react-native-async-storage/async-storage": "*",
     "react": "*",
     "react-native": "*"
   },

@@ -1,158 +1,307 @@
-import { NativeModules, Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
+import type { AppStateStatus } from 'react-native';
+import {
+  MostlyGoodMetrics as MGMClient,
+  type MGMConfiguration,
+  type EventProperties,
+  SystemEvents,
+  SystemProperties,
+} from 'mostly-good-metrics';
+import { AsyncStorageEventStorage, persistence } from './storage';
 
-const LINKING_ERROR =
-  `The package 'react-native-mostly-good-metrics' doesn't seem to be linked. Make sure: \n\n` +
-  Platform.select({ ios: "- You have run 'pod install'\n", default: '' }) +
-  '- You rebuilt the app after installing the package\n' +
-  '- You are not using Expo Go\n';
+export type { MGMConfiguration, EventProperties };
 
-const MostlyGoodMetricsModule = NativeModules.MostlyGoodMetricsModule
-  ? NativeModules.MostlyGoodMetricsModule
-  : new Proxy(
-      {},
-      {
-        get() {
-          throw new Error(LINKING_ERROR);
-        },
-      }
-    );
-
-export interface MostlyGoodMetricsConfig {
+export interface ReactNativeConfig extends Omit<MGMConfiguration, 'storage'> {
   /**
-   * The base URL for the API endpoint.
-   * @default "https://mostlygoodmetrics.com"
+   * The app version string. Required for install/update tracking.
    */
-  baseURL?: string;
-
-  /**
-   * The environment name (e.g., "production", "staging", "development").
-   * @default "production"
-   */
-  environment?: string;
-
-  /**
-   * Optional bundle ID override.
-   */
-  bundleId?: string;
-
-  /**
-   * Maximum number of events to batch before sending.
-   * @default 100
-   * @max 1000
-   */
-  maxBatchSize?: number;
-
-  /**
-   * Interval in seconds between automatic flush attempts.
-   * @default 30
-   */
-  flushInterval?: number;
-
-  /**
-   * Maximum number of events to store locally before dropping oldest.
-   * @default 10000
-   */
-  maxStoredEvents?: number;
-
-  /**
-   * Whether to enable debug logging.
-   * @default false
-   */
-  enableDebugLogging?: boolean;
-
-  /**
-   * Whether to automatically track app lifecycle events.
-   * Tracks: app_installed, app_updated, app_opened, app_backgrounded
-   * @default true
-   */
-  trackAppLifecycleEvents?: boolean;
+  appVersion?: string;
 }
 
-export type EventProperties = Record<string, unknown>;
+// Use global to persist state across hot reloads
+const g = globalThis as typeof globalThis & {
+  __MGM_RN_STATE__?: {
+    appStateSubscription: { remove: () => void } | null;
+    isConfigured: boolean;
+    currentAppState: AppStateStatus;
+    debugLogging: boolean;
+    lastLifecycleEvent: { name: string; time: number } | null;
+  };
+};
+
+// Initialize or restore state
+if (!g.__MGM_RN_STATE__) {
+  g.__MGM_RN_STATE__ = {
+    appStateSubscription: null,
+    isConfigured: false,
+    currentAppState: AppState.currentState,
+    debugLogging: false,
+    lastLifecycleEvent: null,
+  };
+}
+
+const state = g.__MGM_RN_STATE__;
+
+const DEDUPE_INTERVAL_MS = 1000; // Ignore duplicate events within 1 second
+
+function log(...args: unknown[]) {
+  if (state.debugLogging) {
+    console.log('[MostlyGoodMetrics]', ...args);
+  }
+}
+
+/**
+ * Track a lifecycle event with deduplication.
+ */
+function trackLifecycleEvent(eventName: string, properties?: EventProperties) {
+  const now = Date.now();
+
+  // Deduplicate events that fire multiple times in quick succession
+  if (state.lastLifecycleEvent &&
+      state.lastLifecycleEvent.name === eventName &&
+      now - state.lastLifecycleEvent.time < DEDUPE_INTERVAL_MS) {
+    log(`Skipping duplicate ${eventName} (${now - state.lastLifecycleEvent.time}ms ago)`);
+    return;
+  }
+
+  state.lastLifecycleEvent = { name: eventName, time: now };
+  log(`Tracking lifecycle event: ${eventName}`);
+  MGMClient.track(eventName, properties);
+}
+
+/**
+ * Handle app state changes for lifecycle tracking.
+ */
+function handleAppStateChange(nextAppState: AppStateStatus) {
+  if (!MGMClient.shared) return;
+
+  log(`AppState change: ${state.currentAppState} -> ${nextAppState}`);
+
+  // App came to foreground
+  if (state.currentAppState.match(/inactive|background/) && nextAppState === 'active') {
+    trackLifecycleEvent(SystemEvents.APP_OPENED);
+  }
+
+  // App went to background
+  if (state.currentAppState === 'active' && nextAppState.match(/inactive|background/)) {
+    trackLifecycleEvent(SystemEvents.APP_BACKGROUNDED);
+    // Flush events when going to background
+    MGMClient.flush().catch((e) => log('Flush error:', e));
+  }
+
+  state.currentAppState = nextAppState;
+}
+
+/**
+ * Track app install or update events.
+ */
+async function trackInstallOrUpdate(appVersion?: string) {
+  if (!appVersion) return;
+
+  const previousVersion = await persistence.getAppVersion();
+  const isFirst = await persistence.isFirstLaunch();
+
+  if (isFirst) {
+    trackLifecycleEvent(SystemEvents.APP_INSTALLED, {
+      [SystemProperties.VERSION]: appVersion,
+    });
+    await persistence.setAppVersion(appVersion);
+  } else if (previousVersion && previousVersion !== appVersion) {
+    trackLifecycleEvent(SystemEvents.APP_UPDATED, {
+      [SystemProperties.VERSION]: appVersion,
+      [SystemProperties.PREVIOUS_VERSION]: previousVersion,
+    });
+    await persistence.setAppVersion(appVersion);
+  } else if (!previousVersion) {
+    await persistence.setAppVersion(appVersion);
+  }
+}
 
 /**
  * MostlyGoodMetrics React Native SDK
- *
- * @example
- * ```typescript
- * import MostlyGoodMetrics from 'react-native-mostly-good-metrics';
- *
- * // Initialize
- * MostlyGoodMetrics.configure('your-api-key');
- *
- * // Track events
- * MostlyGoodMetrics.track('button_clicked', { button_name: 'submit' });
- *
- * // Identify users
- * MostlyGoodMetrics.identify('user-123');
- * ```
  */
 const MostlyGoodMetrics = {
   /**
    * Configure the SDK with an API key and optional settings.
-   *
-   * @param apiKey - Your MostlyGoodMetrics API key
-   * @param config - Optional configuration settings
    */
-  configure(apiKey: string, config: MostlyGoodMetricsConfig = {}): void {
-    MostlyGoodMetricsModule.configure(apiKey, config);
+  configure(apiKey: string, config: Omit<ReactNativeConfig, 'apiKey'> = {}): void {
+    // Check both our state and the underlying JS SDK
+    if (state.isConfigured || MGMClient.isConfigured) {
+      log('Already configured, skipping');
+      return;
+    }
+
+    state.debugLogging = config.enableDebugLogging ?? false;
+    log('Configuring with options:', config);
+
+    // Create AsyncStorage-based storage
+    const storage = new AsyncStorageEventStorage(config.maxStoredEvents);
+
+    // Restore user ID from storage
+    persistence.getUserId().then((userId) => {
+      if (userId) {
+        log('Restored user ID:', userId);
+      }
+    });
+
+    // Configure the JS SDK
+    // Disable its built-in lifecycle tracking since we handle it ourselves
+    MGMClient.configure({
+      apiKey,
+      ...config,
+      storage,
+      osVersion: getOSVersion(),
+      trackAppLifecycleEvents: false, // We handle this with AppState
+    });
+
+    state.isConfigured = true;
+
+    // Set up React Native lifecycle tracking
+    if (config.trackAppLifecycleEvents !== false) {
+      log('Setting up lifecycle tracking, currentAppState:', state.currentAppState);
+
+      // Remove any existing listener (in case of hot reload)
+      if (state.appStateSubscription) {
+        state.appStateSubscription.remove();
+        state.appStateSubscription = null;
+      }
+
+      // Track initial app open
+      trackLifecycleEvent(SystemEvents.APP_OPENED);
+
+      // Track install/update
+      trackInstallOrUpdate(config.appVersion).catch((e) => log('Install/update tracking error:', e));
+
+      // Subscribe to app state changes
+      state.appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
+    }
   },
 
   /**
    * Track an event with optional properties.
-   *
-   * @param name - Event name (alphanumeric + underscore, must start with letter)
-   * @param properties - Optional custom properties for the event
    */
   track(name: string, properties?: EventProperties): void {
-    MostlyGoodMetricsModule.track(name, properties ?? null);
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+
+    // Add React Native specific properties
+    const enrichedProperties: EventProperties = {
+      [SystemProperties.DEVICE_TYPE]: getDeviceType(),
+      ...properties,
+    };
+
+    MGMClient.track(name, enrichedProperties);
   },
 
   /**
-   * Identify a user for all subsequent events.
-   *
-   * @param userId - Unique identifier for the user
+   * Identify a user.
    */
   identify(userId: string): void {
-    MostlyGoodMetricsModule.identify(userId);
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+
+    log('Identifying user:', userId);
+    MGMClient.identify(userId);
+    // Also persist to AsyncStorage for restoration
+    persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
   },
 
   /**
    * Clear the current user identity.
    */
   resetIdentity(): void {
-    MostlyGoodMetricsModule.resetIdentity();
+    if (!state.isConfigured) return;
+
+    log('Resetting identity');
+    MGMClient.resetIdentity();
+    persistence.setUserId(null).catch((e) => log('Failed to clear user ID:', e));
   },
 
   /**
    * Manually flush pending events to the server.
    */
   flush(): void {
-    MostlyGoodMetricsModule.flush();
+    if (!state.isConfigured) return;
+
+    log('Flushing events');
+    MGMClient.flush().catch((e) => log('Flush error:', e));
   },
 
   /**
    * Start a new session with a fresh session ID.
    */
   startNewSession(): void {
-    MostlyGoodMetricsModule.startNewSession();
+    if (!state.isConfigured) return;
+
+    log('Starting new session');
+    MGMClient.startNewSession();
   },
 
   /**
    * Clear all pending events without sending them.
    */
   clearPendingEvents(): void {
-    MostlyGoodMetricsModule.clearPendingEvents();
+    if (!state.isConfigured) return;
+
+    log('Clearing pending events');
+    MGMClient.clearPendingEvents().catch((e) => log('Clear error:', e));
   },
 
   /**
-   * Get the number of pending events waiting to be sent.
-   *
-   * @returns Promise resolving to the number of pending events
+   * Get the number of pending events.
    */
-  getPendingEventCount(): Promise<number> {
-    return MostlyGoodMetricsModule.getPendingEventCount();
+  async getPendingEventCount(): Promise<number> {
+    if (!state.isConfigured) return 0;
+    return MGMClient.getPendingEventCount();
+  },
+
+  /**
+   * Clean up resources. Call when unmounting the app.
+   */
+  destroy(): void {
+    if (state.appStateSubscription) {
+      state.appStateSubscription.remove();
+      state.appStateSubscription = null;
+    }
+    MGMClient.reset();
+    state.isConfigured = false;
+    state.lastLifecycleEvent = null;
+    log('Destroyed');
   },
 };
+
+/**
+ * Get device type based on platform.
+ */
+function getDeviceType(): string {
+  if (Platform.OS === 'ios') {
+    // Could use react-native-device-info for more accuracy
+    return Platform.isPad ? 'tablet' : 'phone';
+  }
+  if (Platform.OS === 'android') {
+    return 'phone'; // Could detect tablet with dimensions
+  }
+  return 'unknown';
+}
+
+/**
+ * Get OS version based on platform.
+ */
+function getOSVersion(): string {
+  const version = Platform.Version;
+  if (Platform.OS === 'ios') {
+    // iOS returns a string like "15.0"
+    return String(version);
+  }
+  if (Platform.OS === 'android') {
+    // Android returns SDK version number (e.g., 31 for Android 12)
+    return String(version);
+  }
+  return 'unknown';
+}
 
 export default MostlyGoodMetrics;

@@ -1,61 +1,41 @@
-# react-native-mostly-good-metrics
+# MostlyGoodMetrics React Native SDK
 
-React Native SDK for MostlyGoodMetrics analytics.
+A lightweight React Native SDK for tracking analytics events with [MostlyGoodMetrics](https://mostlygoodmetrics.com).
+
+## Requirements
+
+- React Native 0.71+
+- Expo SDK 49+ (if using Expo)
 
 ## Installation
 
 ```bash
-npm install react-native-mostly-good-metrics
+npm install react-native-mostly-good-metrics @react-native-async-storage/async-storage
 # or
-yarn add react-native-mostly-good-metrics
+yarn add react-native-mostly-good-metrics @react-native-async-storage/async-storage
 ```
 
-### iOS
-
-Add the MostlyGoodMetrics pod source to your `ios/Podfile`:
-
-```ruby
-pod 'MostlyGoodMetrics', :git => 'https://github.com/Mostly-Good-Metrics/mostly-good-metrics-swift-sdk.git', :tag => '0.1.0'
-```
-
-Then run:
+For iOS with bare React Native (not Expo):
 
 ```bash
 cd ios && pod install
 ```
 
-### Android
+That's it! No native code configuration needed.
 
-Add JitPack to your project's `android/build.gradle`:
+## Quick Start
 
-```gradle
-allprojects {
-    repositories {
-        // ... other repos
-        maven { url 'https://jitpack.io' }
-    }
-}
-```
+### 1. Initialize the SDK
 
-## Usage
-
-### Initialize
+Initialize once at app startup:
 
 ```typescript
 import MostlyGoodMetrics from 'react-native-mostly-good-metrics';
 
-// Simple initialization
-MostlyGoodMetrics.configure('your-api-key');
-
-// With options
-MostlyGoodMetrics.configure('your-api-key', {
-  environment: 'staging',
-  enableDebugLogging: true,
-  trackAppLifecycleEvents: true,
-});
+MostlyGoodMetrics.configure('mgm_proj_your_api_key');
 ```
 
-### Track Events
+### 2. Track Events
 
 ```typescript
 // Simple event
@@ -63,60 +43,173 @@ MostlyGoodMetrics.track('button_clicked');
 
 // Event with properties
 MostlyGoodMetrics.track('purchase_completed', {
-  product_id: 'sku_123',
+  product_id: 'SKU123',
   price: 29.99,
   currency: 'USD',
 });
 ```
 
-### Identify Users
+### 3. Identify Users
 
 ```typescript
 // Set user identity
-MostlyGoodMetrics.identify('user-123');
+MostlyGoodMetrics.identify('user_123');
 
-// Clear user identity (e.g., on logout)
+// Reset identity (e.g., on logout)
 MostlyGoodMetrics.resetIdentity();
 ```
 
-### Session Management
-
-```typescript
-// Start a new session manually
-MostlyGoodMetrics.startNewSession();
-```
-
-### Manual Flush
-
-```typescript
-// Force send pending events
-MostlyGoodMetrics.flush();
-
-// Check pending event count
-const count = await MostlyGoodMetrics.getPendingEventCount();
-```
+That's it! Events are automatically batched and sent.
 
 ## Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `baseURL` | string | `https://mostlygoodmetrics.com` | API endpoint |
-| `environment` | string | `production` | Environment name |
-| `bundleId` | string | auto-detected | Bundle/package ID override |
-| `maxBatchSize` | number | `100` | Max events per batch (max 1000) |
-| `flushInterval` | number | `30` | Seconds between auto-flush |
-| `maxStoredEvents` | number | `10000` | Max cached events |
-| `enableDebugLogging` | boolean | `false` | Enable debug logs |
-| `trackAppLifecycleEvents` | boolean | `true` | Auto-track lifecycle events |
+For more control, pass a configuration object:
+
+```typescript
+import { version } from './package.json'; // Or use expo-constants
+
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  baseURL: 'https://mostlygoodmetrics.com',
+  environment: 'production',
+  appVersion: version, // Required for install/update tracking
+  maxBatchSize: 100,
+  flushInterval: 30,
+  maxStoredEvents: 10000,
+  enableDebugLogging: __DEV__,
+  trackAppLifecycleEvents: true,
+});
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `baseURL` | `https://mostlygoodmetrics.com` | API endpoint |
+| `environment` | `"production"` | Environment name |
+| `appVersion` | - | App version string (required for install/update tracking) |
+| `maxBatchSize` | `100` | Events per batch (1-1000) |
+| `flushInterval` | `30` | Auto-flush interval in seconds |
+| `maxStoredEvents` | `10000` | Max cached events |
+| `enableDebugLogging` | `false` | Enable console output |
+| `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
+
+**Note:** The SDK automatically detects and includes the OS version (e.g., "15.0" for iOS, SDK version for Android) with every event.
 
 ## Automatic Events
 
-When `trackAppLifecycleEvents` is enabled (default), these events are tracked automatically:
+When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
 
-- `$app_installed` - First app launch
-- `$app_updated` - App version changed
-- `$app_opened` - App came to foreground
-- `$app_backgrounded` - App went to background
+| Event | When | Properties |
+|-------|------|------------|
+| `$app_installed` | First launch after install | `$version` |
+| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
+| `$app_opened` | App became active (foreground) | - |
+| `$app_backgrounded` | App resigned active (background) | - |
+
+## Event Naming
+
+Event names must:
+- Start with a letter (or `$` for system events)
+- Contain only alphanumeric characters and underscores
+- Be 255 characters or less
+
+```typescript
+// Valid
+MostlyGoodMetrics.track('button_clicked');
+MostlyGoodMetrics.track('PurchaseCompleted');
+MostlyGoodMetrics.track('step_1_completed');
+
+// Invalid (will be ignored)
+MostlyGoodMetrics.track('123_event');      // starts with number
+MostlyGoodMetrics.track('event-name');     // contains hyphen
+MostlyGoodMetrics.track('event name');     // contains space
+```
+
+## Properties
+
+Events support various property types:
+
+```typescript
+MostlyGoodMetrics.track('checkout', {
+  string_prop: 'value',
+  int_prop: 42,
+  double_prop: 3.14,
+  bool_prop: true,
+  null_prop: null,
+  list_prop: ['a', 'b', 'c'],
+  nested: {
+    key: 'value',
+  },
+});
+```
+
+**Limits:**
+- String values: truncated to 1000 characters
+- Nesting depth: max 3 levels
+- Total properties size: max 10KB
+
+## Manual Flush
+
+Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
+
+```typescript
+MostlyGoodMetrics.flush();
+```
+
+To check pending events:
+
+```typescript
+const count = await MostlyGoodMetrics.getPendingEventCount();
+console.log(`${count} events pending`);
+```
+
+## Automatic Behavior
+
+The SDK automatically:
+
+- **Persists events** to AsyncStorage, surviving app restarts
+- **Batches events** for efficient network usage
+- **Flushes on interval** (default: every 30 seconds)
+- **Flushes on background** when the app goes to background
+- **Retries on failure** for network errors (events are preserved)
+- **Persists user ID** across app launches
+- **Generates session IDs** per app launch
+
+## Debug Logging
+
+Enable debug logging to see SDK activity:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  enableDebugLogging: true,
+});
+```
+
+Output example:
+```
+[MostlyGoodMetrics] Configuring with options: {...}
+[MostlyGoodMetrics] Setting up lifecycle tracking
+[MostlyGoodMetrics] App opened (foreground)
+[MostlyGoodMetrics] Flushing events
+```
+
+## Running the Example
+
+```bash
+cd example
+npm install
+```
+
+For iOS:
+
+```bash
+cd ios && pod install && cd ..
+npm run ios
+```
+
+For Android:
+
+```bash
+npm run android
+```
 
 ## License
 
