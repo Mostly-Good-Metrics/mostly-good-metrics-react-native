@@ -7,7 +7,7 @@ import {
   SystemEvents,
   SystemProperties,
 } from 'mostly-good-metrics';
-import { AsyncStorageEventStorage, persistence } from './storage';
+import { AsyncStorageEventStorage, persistence, getStorageType } from './storage';
 
 export type { MGMConfiguration, EventProperties };
 
@@ -189,6 +189,7 @@ const MostlyGoodMetrics = {
     // Add React Native specific properties
     const enrichedProperties: EventProperties = {
       [SystemProperties.DEVICE_TYPE]: getDeviceType(),
+      $storage_type: getStorageType(),
       ...properties,
     };
 

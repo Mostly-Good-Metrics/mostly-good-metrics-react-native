@@ -1,7 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View, Pressable, Alert } from 'react-native';
-import MostlyGoodMetrics from 'react-native-mostly-good-metrics';
+import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
 
 export default function App() {
   const [eventCount, setEventCount] = useState(0);

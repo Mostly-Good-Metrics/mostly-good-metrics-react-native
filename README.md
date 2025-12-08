@@ -9,19 +9,22 @@ A lightweight React Native SDK for tracking analytics events with [MostlyGoodMet
 
 ## Installation
 
+### Expo (Recommended)
+
 ```bash
-npm install react-native-mostly-good-metrics @react-native-async-storage/async-storage
-# or
-yarn add react-native-mostly-good-metrics @react-native-async-storage/async-storage
+npm install @mostly-good-metrics/react-native
 ```
 
-For iOS with bare React Native (not Expo):
+That's it! Expo includes AsyncStorage by default, so events persist across app restarts.
+
+### Bare React Native
 
 ```bash
+npm install @mostly-good-metrics/react-native @react-native-async-storage/async-storage
 cd ios && pod install
 ```
 
-That's it! No native code configuration needed.
+**Note:** AsyncStorage is optional. Without it, events are stored in memory only (lost on app restart).
 
 ## Quick Start
 
@@ -30,7 +33,7 @@ That's it! No native code configuration needed.
 Initialize once at app startup:
 
 ```typescript
-import MostlyGoodMetrics from 'react-native-mostly-good-metrics';
+import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
 
 MostlyGoodMetrics.configure('mgm_proj_your_api_key');
 ```
@@ -91,8 +94,6 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
 
-**Note:** The SDK automatically detects and includes the OS version (e.g., "15.0" for iOS, SDK version for Android) with every event.
-
 ## Automatic Events
 
 When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
@@ -103,6 +104,17 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 | `$app_updated` | First launch after version change | `$version`, `$previous_version` |
 | `$app_opened` | App became active (foreground) | - |
 | `$app_backgrounded` | App resigned active (background) | - |
+
+## Automatic Properties
+
+The SDK automatically includes these properties with every event:
+
+| Property | Description |
+|----------|-------------|
+| `$device_type` | Device type (`phone`, `tablet`) |
+| `$storage_type` | Storage type (`persistent` or `memory`) |
+
+Additionally, `osVersion` and `appVersion` (if configured) are included at the event level.
 
 ## Event Naming
 

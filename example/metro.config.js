@@ -19,7 +19,7 @@ config.resolver.blockList = [
 
 // Redirect all modules to use example's node_modules
 config.resolver.extraNodeModules = {
-  'react-native-mostly-good-metrics': sdkRoot,
+  '@mostly-good-metrics/react-native': sdkRoot,
   'mostly-good-metrics': jsSDKRoot,
   'react': path.resolve(projectRoot, 'node_modules', 'react'),
   'react-native': path.resolve(projectRoot, 'node_modules', 'react-native'),
