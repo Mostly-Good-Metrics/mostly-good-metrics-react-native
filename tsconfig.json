@@ -2,7 +2,7 @@
   "compilerOptions": {
     "rootDir": ".",
     "paths": {
-      "react-native-mostly-good-metrics": ["./src/index"]
+      "@mostly-good-metrics/react-native": ["./src/index"]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
@@ -25,5 +25,5 @@
     "target": "ESNext",
     "verbatimModuleSyntax": false
   },
-  "exclude": ["lib", "node_modules"]
+  "exclude": ["lib", "node_modules", "example"]
 }
