@@ -4,6 +4,7 @@ import {
   MostlyGoodMetrics as MGMClient,
   type MGMConfiguration,
   type EventProperties,
+  type Platform as MGMPlatform,
   SystemEvents,
   SystemProperties,
 } from '@mostly-good-metrics/javascript';
@@ -150,6 +151,8 @@ const MostlyGoodMetrics = {
       apiKey,
       ...config,
       storage,
+      platform: Platform.OS as MGMPlatform, // 'ios' or 'android'
+      sdk: 'react-native',
       osVersion: getOSVersion(),
       trackAppLifecycleEvents: false, // We handle this with AppState
     });

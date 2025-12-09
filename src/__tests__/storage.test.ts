@@ -33,7 +33,7 @@ describe('AsyncStorageEventStorage', () => {
       const event = {
         name: 'test_event',
         timestamp: '2024-01-01T00:00:00Z',
-        platform: 'react-native' as const,
+        platform: 'ios' as const,
         environment: 'test',
       };
 
@@ -53,7 +53,7 @@ describe('AsyncStorageEventStorage', () => {
       const existingEvents = Array.from({ length: 100 }, (_, i) => ({
         name: `event${i}`,
         timestamp: '2024-01-01T00:00:00Z',
-        platform: 'react-native',
+        platform: 'ios',
         environment: 'test',
       }));
       mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(existingEvents));
@@ -61,7 +61,7 @@ describe('AsyncStorageEventStorage', () => {
       const newEvent = {
         name: 'event_new',
         timestamp: '2024-01-01T00:00:02Z',
-        platform: 'react-native' as const,
+        platform: 'ios' as const,
         environment: 'test',
       };
 
@@ -78,9 +78,9 @@ describe('AsyncStorageEventStorage', () => {
   describe('fetchEvents', () => {
     it('returns events up to limit', async () => {
       const events = [
-        { name: 'event1', timestamp: '2024-01-01T00:00:00Z', platform: 'react-native', environment: 'test' },
-        { name: 'event2', timestamp: '2024-01-01T00:00:01Z', platform: 'react-native', environment: 'test' },
-        { name: 'event3', timestamp: '2024-01-01T00:00:02Z', platform: 'react-native', environment: 'test' },
+        { name: 'event1', timestamp: '2024-01-01T00:00:00Z', platform: 'ios', environment: 'test' },
+        { name: 'event2', timestamp: '2024-01-01T00:00:01Z', platform: 'ios', environment: 'test' },
+        { name: 'event3', timestamp: '2024-01-01T00:00:02Z', platform: 'ios', environment: 'test' },
       ];
       mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(events));
 
@@ -103,9 +103,9 @@ describe('AsyncStorageEventStorage', () => {
   describe('removeEvents', () => {
     it('removes events from the beginning', async () => {
       const events = [
-        { name: 'event1', timestamp: '2024-01-01T00:00:00Z', platform: 'react-native', environment: 'test' },
-        { name: 'event2', timestamp: '2024-01-01T00:00:01Z', platform: 'react-native', environment: 'test' },
-        { name: 'event3', timestamp: '2024-01-01T00:00:02Z', platform: 'react-native', environment: 'test' },
+        { name: 'event1', timestamp: '2024-01-01T00:00:00Z', platform: 'ios', environment: 'test' },
+        { name: 'event2', timestamp: '2024-01-01T00:00:01Z', platform: 'ios', environment: 'test' },
+        { name: 'event3', timestamp: '2024-01-01T00:00:02Z', platform: 'ios', environment: 'test' },
       ];
       mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(events));
 
@@ -120,8 +120,8 @@ describe('AsyncStorageEventStorage', () => {
   describe('eventCount', () => {
     it('returns count of stored events', async () => {
       const events = [
-        { name: 'event1', timestamp: '2024-01-01T00:00:00Z', platform: 'react-native', environment: 'test' },
-        { name: 'event2', timestamp: '2024-01-01T00:00:01Z', platform: 'react-native', environment: 'test' },
+        { name: 'event1', timestamp: '2024-01-01T00:00:00Z', platform: 'ios', environment: 'test' },
+        { name: 'event2', timestamp: '2024-01-01T00:00:01Z', platform: 'ios', environment: 'test' },
       ];
       mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(events));
 
