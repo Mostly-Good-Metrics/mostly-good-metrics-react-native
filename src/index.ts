@@ -263,6 +263,58 @@ const MostlyGoodMetrics = {
     return MGMClient.getPendingEventCount();
   },
 
+  // Super Properties
+
+  /**
+   * Set a single super property that will be included with every event.
+   */
+  setSuperProperty(key: string, value: EventProperties[string]): void {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+    log('Setting super property:', key);
+    MGMClient.setSuperProperty(key, value);
+  },
+
+  /**
+   * Set multiple super properties at once.
+   */
+  setSuperProperties(properties: EventProperties): void {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+    log('Setting super properties:', Object.keys(properties).join(', '));
+    MGMClient.setSuperProperties(properties);
+  },
+
+  /**
+   * Remove a single super property.
+   */
+  removeSuperProperty(key: string): void {
+    if (!state.isConfigured) return;
+    log('Removing super property:', key);
+    MGMClient.removeSuperProperty(key);
+  },
+
+  /**
+   * Clear all super properties.
+   */
+  clearSuperProperties(): void {
+    if (!state.isConfigured) return;
+    log('Clearing all super properties');
+    MGMClient.clearSuperProperties();
+  },
+
+  /**
+   * Get all current super properties.
+   */
+  getSuperProperties(): EventProperties {
+    if (!state.isConfigured) return {};
+    return MGMClient.getSuperProperties();
+  },
+
   /**
    * Clean up resources. Call when unmounting the app.
    */
