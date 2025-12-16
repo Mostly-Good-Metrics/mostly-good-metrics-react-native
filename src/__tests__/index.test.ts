@@ -23,6 +23,11 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 // Mock the JS SDK to capture configuration
 const mockConfigure = jest.fn();
 const mockTrack = jest.fn();
+const mockSetSuperProperty = jest.fn();
+const mockSetSuperProperties = jest.fn();
+const mockRemoveSuperProperty = jest.fn();
+const mockClearSuperProperties = jest.fn();
+const mockGetSuperProperties = jest.fn().mockReturnValue({});
 const mockIsConfigured = false;
 
 jest.mock('@mostly-good-metrics/javascript', () => ({
@@ -38,6 +43,11 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
     clearPendingEvents: jest.fn().mockResolvedValue(undefined),
     getPendingEventCount: jest.fn().mockResolvedValue(0),
     reset: jest.fn(),
+    setSuperProperty: mockSetSuperProperty,
+    setSuperProperties: mockSetSuperProperties,
+    removeSuperProperty: mockRemoveSuperProperty,
+    clearSuperProperties: mockClearSuperProperties,
+    getSuperProperties: mockGetSuperProperties,
   },
   SystemEvents: {
     APP_INSTALLED: '$app_installed',
@@ -95,6 +105,57 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.trackAppLifecycleEvents).toBe(false);
+    });
+  });
+
+  describe('super properties', () => {
+    beforeEach(() => {
+      MostlyGoodMetrics.configure('test-api-key');
+      jest.clearAllMocks();
+    });
+
+    it('should call setSuperProperty on the JS SDK', () => {
+      MostlyGoodMetrics.setSuperProperty('plan', 'premium');
+
+      expect(mockSetSuperProperty).toHaveBeenCalledTimes(1);
+      expect(mockSetSuperProperty).toHaveBeenCalledWith('plan', 'premium');
+    });
+
+    it('should call setSuperProperties on the JS SDK', () => {
+      const props = { plan: 'premium', tier: 'gold' };
+      MostlyGoodMetrics.setSuperProperties(props);
+
+      expect(mockSetSuperProperties).toHaveBeenCalledTimes(1);
+      expect(mockSetSuperProperties).toHaveBeenCalledWith(props);
+    });
+
+    it('should call removeSuperProperty on the JS SDK', () => {
+      MostlyGoodMetrics.removeSuperProperty('plan');
+
+      expect(mockRemoveSuperProperty).toHaveBeenCalledTimes(1);
+      expect(mockRemoveSuperProperty).toHaveBeenCalledWith('plan');
+    });
+
+    it('should call clearSuperProperties on the JS SDK', () => {
+      MostlyGoodMetrics.clearSuperProperties();
+
+      expect(mockClearSuperProperties).toHaveBeenCalledTimes(1);
+    });
+
+    it('should call getSuperProperties on the JS SDK', () => {
+      mockGetSuperProperties.mockReturnValue({ plan: 'premium' });
+
+      const result = MostlyGoodMetrics.getSuperProperties();
+
+      expect(mockGetSuperProperties).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ plan: 'premium' });
+    });
+
+    it('should not call setSuperProperty when SDK is not configured', () => {
+      MostlyGoodMetrics.destroy();
+      MostlyGoodMetrics.setSuperProperty('plan', 'premium');
+
+      expect(mockSetSuperProperty).not.toHaveBeenCalled();
     });
   });
 });
