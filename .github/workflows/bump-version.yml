@@ -76,6 +76,14 @@ jobs:
       - name: Update version in file
         run: npm version ${{ steps.version.outputs.new }} --no-git-tag-version
 
+      - name: Update SDK version constant in code
+        run: |
+          NEW="${{ steps.version.outputs.new }}"
+          # React Native SDK - update SDK_VERSION in index.ts
+          if [ -f "src/index.ts" ]; then
+            sed -i "s/const SDK_VERSION = '.*';/const SDK_VERSION = '$NEW';/" src/index.ts
+          fi
+
       - name: Create Pull Request
         id: create-pr
         uses: peter-evans/create-pull-request@v6
