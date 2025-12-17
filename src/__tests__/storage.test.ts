@@ -32,6 +32,7 @@ describe('AsyncStorageEventStorage', () => {
     it('stores an event', async () => {
       const event = {
         name: 'test_event',
+        client_event_id: 'test-uuid-1234',
         timestamp: '2024-01-01T00:00:00Z',
         platform: 'ios' as const,
         environment: 'test',
@@ -60,6 +61,7 @@ describe('AsyncStorageEventStorage', () => {
 
       const newEvent = {
         name: 'event_new',
+        client_event_id: 'test-uuid-new',
         timestamp: '2024-01-01T00:00:02Z',
         platform: 'ios' as const,
         environment: 'test',
