@@ -11,7 +11,7 @@ import {
 import { AsyncStorageEventStorage, persistence, getStorageType } from './storage';
 
 /** SDK version for metrics headers */
-const SDK_VERSION = '0.3.0';
+const SDK_VERSION = '0.3.2';
 
 export type { MGMConfiguration, EventProperties };
 
