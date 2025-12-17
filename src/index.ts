@@ -10,6 +10,9 @@ import {
 } from '@mostly-good-metrics/javascript';
 import { AsyncStorageEventStorage, persistence, getStorageType } from './storage';
 
+/** SDK version for metrics headers */
+const SDK_VERSION = '0.3.0';
+
 export type { MGMConfiguration, EventProperties };
 
 export interface ReactNativeConfig extends Omit<MGMConfiguration, 'storage'> {
@@ -153,6 +156,7 @@ const MostlyGoodMetrics = {
       storage,
       platform: Platform.OS as MGMPlatform, // 'ios' or 'android'
       sdk: 'react-native',
+      sdkVersion: SDK_VERSION,
       osVersion: getOSVersion(),
       trackAppLifecycleEvents: false, // We handle this with AppState
     });
