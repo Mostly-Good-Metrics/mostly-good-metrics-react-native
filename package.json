@@ -44,7 +44,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@mostly-good-metrics/javascript": "^0.4.3"
+    "@mostly-good-metrics/javascript": "^0.4.4"
   },
   "devDependencies": {
     "@react-native-async-storage/async-storage": "^1.21.0",
