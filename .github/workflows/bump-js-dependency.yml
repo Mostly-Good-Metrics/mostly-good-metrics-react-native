@@ -26,7 +26,7 @@ jobs:
           sed -i 's/"@mostly-good-metrics\/javascript": "[^"]*"/"@mostly-good-metrics\/javascript": "^'"$VERSION"'"/' package.json
 
       - name: Install to sync lockfile
-        run: npm install
+        run: npm install --ignore-scripts
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v5
