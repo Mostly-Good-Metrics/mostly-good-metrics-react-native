@@ -5,7 +5,6 @@ import {
   type MGMConfiguration,
   type EventProperties,
   type Platform as MGMPlatform,
-  type UserProfile,
   SystemEvents,
   SystemProperties,
 } from '@mostly-good-metrics/javascript';
@@ -14,7 +13,7 @@ import { AsyncStorageEventStorage, persistence, getStorageType } from './storage
 /** SDK version for metrics headers */
 const SDK_VERSION = '0.3.4';
 
-export type { MGMConfiguration, EventProperties, UserProfile };
+export type { MGMConfiguration, EventProperties };
 
 export interface ReactNativeConfig extends Omit<MGMConfiguration, 'storage'> {
   /**
@@ -205,21 +204,16 @@ const MostlyGoodMetrics = {
   },
 
   /**
-   * Identify a user with optional profile data.
-   * Profile data (email, name) is sent to the backend via the $identify event.
-   * Debouncing: only sends $identify if payload changed or >24h since last send.
-   *
-   * @param userId The user's unique identifier
-   * @param profile Optional profile data (email, name)
+   * Identify a user.
    */
-  identify(userId: string, profile?: UserProfile): void {
+  identify(userId: string): void {
     if (!state.isConfigured) {
       console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
-    log('Identifying user:', userId, profile ? 'with profile' : '');
-    MGMClient.identify(userId, profile);
+    log('Identifying user:', userId);
+    MGMClient.identify(userId);
     // Also persist to AsyncStorage for restoration
     persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
   },
