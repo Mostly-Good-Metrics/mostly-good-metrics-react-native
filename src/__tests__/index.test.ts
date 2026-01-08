@@ -158,4 +158,49 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       expect(mockSetSuperProperty).not.toHaveBeenCalled();
     });
   });
+
+  describe('identify', () => {
+    // Get reference to the mock identify function
+    const mockIdentify = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics.identify;
+
+    beforeEach(() => {
+      MostlyGoodMetrics.configure('test-api-key');
+      jest.clearAllMocks();
+    });
+
+    it('should call identify with just userId', () => {
+      MostlyGoodMetrics.identify('user-123');
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user-123', undefined);
+    });
+
+    it('should call identify with email', () => {
+      MostlyGoodMetrics.identify('user-123', { email: 'test@example.com' });
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user-123', { email: 'test@example.com' });
+    });
+
+    it('should call identify with name', () => {
+      MostlyGoodMetrics.identify('user-123', { name: 'Test User' });
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user-123', { name: 'Test User' });
+    });
+
+    it('should call identify with both email and name', () => {
+      MostlyGoodMetrics.identify('user-123', { email: 'test@example.com', name: 'Test User' });
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user-123', { email: 'test@example.com', name: 'Test User' });
+    });
+
+    it('should not call identify when SDK is not configured', () => {
+      MostlyGoodMetrics.destroy();
+      MostlyGoodMetrics.identify('user-123', { email: 'test@example.com' });
+
+      expect(mockIdentify).not.toHaveBeenCalled();
+    });
+  });
 });
