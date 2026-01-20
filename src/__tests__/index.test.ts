@@ -28,6 +28,8 @@ const mockSetSuperProperties = jest.fn();
 const mockRemoveSuperProperty = jest.fn();
 const mockClearSuperProperties = jest.fn();
 const mockGetSuperProperties = jest.fn().mockReturnValue({});
+const mockGetVariant = jest.fn().mockReturnValue(null);
+const mockReady = jest.fn().mockResolvedValue(undefined);
 const mockIsConfigured = false;
 
 jest.mock('@mostly-good-metrics/javascript', () => ({
@@ -48,6 +50,8 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
     removeSuperProperty: mockRemoveSuperProperty,
     clearSuperProperties: mockClearSuperProperties,
     getSuperProperties: mockGetSuperProperties,
+    getVariant: mockGetVariant,
+    ready: mockReady,
   },
   SystemEvents: {
     APP_INSTALLED: '$app_installed',
@@ -214,6 +218,67 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       MostlyGoodMetrics.identify('user-123', { email: 'test@example.com' });
 
       expect(mockIdentify).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('A/B testing', () => {
+    beforeEach(() => {
+      MostlyGoodMetrics.configure('test-api-key');
+      jest.clearAllMocks();
+    });
+
+    describe('getVariant', () => {
+      it('should call getVariant on the JS SDK', () => {
+        mockGetVariant.mockReturnValue('variant-a');
+
+        const result = MostlyGoodMetrics.getVariant('my-experiment');
+
+        expect(mockGetVariant).toHaveBeenCalledTimes(1);
+        expect(mockGetVariant).toHaveBeenCalledWith('my-experiment');
+        expect(result).toBe('variant-a');
+      });
+
+      it('should return null when experiment does not exist', () => {
+        mockGetVariant.mockReturnValue(null);
+
+        const result = MostlyGoodMetrics.getVariant('nonexistent-experiment');
+
+        expect(mockGetVariant).toHaveBeenCalledWith('nonexistent-experiment');
+        expect(result).toBeNull();
+      });
+
+      it('should return null when SDK is not configured', () => {
+        MostlyGoodMetrics.destroy();
+
+        const result = MostlyGoodMetrics.getVariant('my-experiment');
+
+        expect(mockGetVariant).not.toHaveBeenCalled();
+        expect(result).toBeNull();
+      });
+    });
+
+    describe('ready', () => {
+      it('should call ready on the JS SDK', async () => {
+        mockReady.mockResolvedValue(undefined);
+
+        await MostlyGoodMetrics.ready();
+
+        expect(mockReady).toHaveBeenCalledTimes(1);
+      });
+
+      it('should resolve when SDK is ready', async () => {
+        mockReady.mockResolvedValue(undefined);
+
+        await expect(MostlyGoodMetrics.ready()).resolves.toBeUndefined();
+      });
+
+      it('should not call ready when SDK is not configured', async () => {
+        MostlyGoodMetrics.destroy();
+
+        await MostlyGoodMetrics.ready();
+
+        expect(mockReady).not.toHaveBeenCalled();
+      });
     });
   });
 });

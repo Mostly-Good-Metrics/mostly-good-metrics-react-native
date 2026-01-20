@@ -326,6 +326,40 @@ const MostlyGoodMetrics = {
     return MGMClient.getSuperProperties();
   },
 
+  // A/B Testing
+
+  /**
+   * Get the variant for an experiment.
+   * Returns null if the experiment doesn't exist or SDK is not ready.
+   * Call ready() first to ensure experiments are loaded.
+   *
+   * @param experimentName The name of the experiment
+   * @returns The variant name, or null if not available
+   */
+  getVariant(experimentName: string): string | null {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return null;
+    }
+    log('Getting variant for experiment:', experimentName);
+    return MGMClient.getVariant(experimentName);
+  },
+
+  /**
+   * Wait for the SDK to be ready, including experiment data.
+   * Call this before getVariant() to ensure experiments are loaded.
+   *
+   * @returns A promise that resolves when the SDK is ready
+   */
+  async ready(): Promise<void> {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+    log('Waiting for SDK to be ready');
+    return MGMClient.ready();
+  },
+
   /**
    * Clean up resources. Call when unmounting the app.
    */
