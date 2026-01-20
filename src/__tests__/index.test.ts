@@ -85,7 +85,7 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(mockIdentify).toHaveBeenCalledTimes(1);
-      expect(mockIdentify).toHaveBeenCalledWith('user-123', undefined);
+      expect(mockIdentify).toHaveBeenCalledWith('user-123');
     });
 
     it('should pass platform as ios when Platform.OS is ios', () => {
