@@ -142,13 +142,6 @@ const MostlyGoodMetrics = {
     // Create AsyncStorage-based storage
     const storage = new AsyncStorageEventStorage(config.maxStoredEvents);
 
-    // Restore user ID from storage
-    persistence.getUserId().then((userId) => {
-      if (userId) {
-        log('Restored user ID:', userId);
-      }
-    });
-
     // Configure the JS SDK
     // Disable its built-in lifecycle tracking since we handle it ourselves
     MGMClient.configure({
@@ -163,6 +156,14 @@ const MostlyGoodMetrics = {
     });
 
     state.isConfigured = true;
+
+    // Restore user ID from storage after configuration
+    persistence.getUserId().then((userId) => {
+      if (userId) {
+        log('Restored user ID:', userId);
+        MGMClient.identify(userId);
+      }
+    });
 
     // Set up React Native lifecycle tracking
     if (config.trackAppLifecycleEvents !== false) {

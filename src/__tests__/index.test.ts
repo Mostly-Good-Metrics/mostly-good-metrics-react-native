@@ -75,6 +75,19 @@ describe('MostlyGoodMetrics React Native SDK', () => {
   });
 
   describe('configure', () => {
+    it('should restore user ID from storage', async () => {
+      const mockIdentify = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics.identify;
+      const mockAsyncStorage = jest.requireMock('@react-native-async-storage/async-storage').default;
+      mockAsyncStorage.getItem.mockResolvedValueOnce('user-123');
+
+      MostlyGoodMetrics.configure('test-api-key');
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockIdentify).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith('user-123');
+    });
+
     it('should pass platform as ios when Platform.OS is ios', () => {
       MostlyGoodMetrics.configure('test-api-key');
 
