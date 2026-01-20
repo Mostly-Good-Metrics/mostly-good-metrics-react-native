@@ -28,6 +28,7 @@ const mockSetSuperProperties = jest.fn();
 const mockRemoveSuperProperty = jest.fn();
 const mockClearSuperProperties = jest.fn();
 const mockGetSuperProperties = jest.fn().mockReturnValue({});
+const mockGetVariant = jest.fn();
 const mockIsConfigured = false;
 
 jest.mock('@mostly-good-metrics/javascript', () => ({
@@ -48,6 +49,7 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
     removeSuperProperty: mockRemoveSuperProperty,
     clearSuperProperties: mockClearSuperProperties,
     getSuperProperties: mockGetSuperProperties,
+    getVariant: mockGetVariant,
   },
   SystemEvents: {
     APP_INSTALLED: '$app_installed',
@@ -214,6 +216,32 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       MostlyGoodMetrics.identify('user-123', { email: 'test@example.com' });
 
       expect(mockIdentify).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getVariant', () => {
+    beforeEach(() => {
+      MostlyGoodMetrics.configure('test-api-key');
+      jest.clearAllMocks();
+    });
+
+    it('should call getVariant on the JS SDK', () => {
+      mockGetVariant.mockReturnValue('a');
+
+      const result = MostlyGoodMetrics.getVariant('button-color-test');
+
+      expect(mockGetVariant).toHaveBeenCalledTimes(1);
+      expect(mockGetVariant).toHaveBeenCalledWith('button-color-test');
+      expect(result).toBe('a');
+    });
+
+    it('should return null when SDK is not configured', () => {
+      MostlyGoodMetrics.destroy();
+
+      const result = MostlyGoodMetrics.getVariant('button-color-test');
+
+      expect(mockGetVariant).not.toHaveBeenCalled();
+      expect(result).toBeNull();
     });
   });
 });

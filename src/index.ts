@@ -274,6 +274,17 @@ const MostlyGoodMetrics = {
     return MGMClient.getPendingEventCount();
   },
 
+  /**
+   * Get a deterministic variant for an experiment.
+   */
+  getVariant(experimentName: string): string | null {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return null;
+    }
+    return MGMClient.getVariant(experimentName);
+  },
+
   // Super Properties
 
   /**
