@@ -85,14 +85,14 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `baseURL` | `https://mostlygoodmetrics.com` | API endpoint |
-| `environment` | `"production"` | Environment name |
+| `baseURL` | `https://mostlygoodmetrics.com` | API endpoint for sending events |
+| `environment` | `"production"` | Environment name included with all events |
 | `appVersion` | - | App version string (required for install/update tracking) |
-| `maxBatchSize` | `100` | Events per batch (1-1000) |
+| `maxBatchSize` | `100` | Maximum events per batch (range: 1-1000) |
 | `flushInterval` | `30` | Auto-flush interval in seconds |
-| `maxStoredEvents` | `10000` | Max cached events |
-| `enableDebugLogging` | `false` | Enable console output |
-| `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
+| `maxStoredEvents` | `10000` | Maximum events to cache locally before dropping oldest |
+| `enableDebugLogging` | `false` | Enable console output for debugging |
+| `trackAppLifecycleEvents` | `true` | Automatically track app lifecycle events |
 
 ## Automatic Events
 
@@ -112,34 +112,39 @@ Every event automatically includes:
 | Field | Example | Description |
 |-------|---------|-------------|
 | `platform` | `"ios"` | Platform (ios, android) |
-| `os_version` | `"17.1"` | Operating system version |
-| `app_version` | `"1.0.0"` | App version (if configured) |
+| `os_version` | `"17.1"` | Operating system version (iOS version string or Android SDK level) |
+| `app_version` | `"1.0.0"` | App version (if configured via `appVersion` option) |
 | `environment` | `"production"` | Environment from configuration |
-| `session_id` | `"uuid..."` | Unique session ID (per app launch) |
+| `session_id` | `"uuid..."` | Unique session ID (generated per app launch) |
 | `user_id` | `"user_123"` | User ID (if set via `identify()`) |
+| `anonymous_id` | `"uuid..."` | Anonymous ID (generated if no user identified) |
 | `$device_type` | `"phone"` | Device type (phone, tablet) |
-| `$storage_type` | `"persistent"` | Storage type (persistent or memory) |
+| `$storage_type` | `"persistent"` | Storage type (persistent with AsyncStorage, or memory without) |
+| `sdk` | `"react-native"` | SDK identifier |
+| `sdk_version` | `"0.3.6"` | SDK version |
 
 > **Note:** The `$` prefix indicates reserved system properties. Avoid using `$` prefix for your own custom properties.
 
 ## Event Naming
 
-Event names must:
-- Start with a letter (or `$` for system events)
-- Contain only alphanumeric characters and underscores
-- Be 255 characters or less
+Event names must follow these rules:
+1. Start with a letter (a-z, A-Z)
+2. Contain only alphanumeric characters (a-z, A-Z, 0-9) and underscores (_)
+3. Be 255 characters or less
 
 ```typescript
 // Valid
 MostlyGoodMetrics.track('button_clicked');      // lowercase with underscores
 MostlyGoodMetrics.track('PurchaseCompleted');   // camelCase
-MostlyGoodMetrics.track('step_1_completed');    // numbers after first char
+MostlyGoodMetrics.track('step_1_completed');    // numbers allowed after first char
 
-// Invalid (will be ignored)
+// Invalid (will be rejected)
 MostlyGoodMetrics.track('123_event');           // starts with number
 MostlyGoodMetrics.track('event-name');          // contains hyphen
-MostlyGoodMetrics.track('event name');          // contains space (not allowed)
+MostlyGoodMetrics.track('event name');          // contains space
 ```
+
+> **Note:** The `$` prefix is reserved for system events (e.g., `$app_opened`). Do not use `$` prefix for your own event names.
 
 ## Properties
 
@@ -191,6 +196,30 @@ When you call `resetIdentity()`:
 - Use this when users log out to ensure clean session separation
 
 **Note:** Without AsyncStorage, anonymous IDs and user IDs are stored in memory only and will not persist across app restarts.
+
+## Super Properties
+
+Super properties are automatically included with every event you track. Use them for data that should be attached to all events, like subscription tier or A/B test variants:
+
+```typescript
+// Set a single super property
+MostlyGoodMetrics.setSuperProperty('subscription_tier', 'premium');
+
+// Set multiple super properties at once
+MostlyGoodMetrics.setSuperProperties({
+  subscription_tier: 'premium',
+  ab_variant: 'control',
+});
+
+// Remove a super property
+MostlyGoodMetrics.removeSuperProperty('ab_variant');
+
+// Clear all super properties
+MostlyGoodMetrics.clearSuperProperties();
+
+// Get current super properties
+const props = MostlyGoodMetrics.getSuperProperties();
+```
 
 ## Manual Flush
 
@@ -247,23 +276,43 @@ Output example:
 
 ## Running the Example
 
+The example app demonstrates all SDK features and is built with Expo.
+
+### Expo (Recommended)
+
 ```bash
 cd example
 npm install
+npm start
 ```
 
-For iOS:
+Then press `i` for iOS simulator or `a` for Android emulator.
+
+To run directly on a specific platform:
 
 ```bash
+npm run ios      # iOS simulator
+npm run android  # Android emulator
+```
+
+### Bare React Native
+
+If you've ejected from Expo or are using a bare React Native project, you'll need to install CocoaPods for iOS:
+
+```bash
+cd example
+npm install
 cd ios && pod install && cd ..
 npm run ios
 ```
 
-For Android:
+For Android, just run:
 
 ```bash
 npm run android
 ```
+
+The example app includes buttons to test tracking events, identifying users, and resetting identity.
 
 ## License
 
