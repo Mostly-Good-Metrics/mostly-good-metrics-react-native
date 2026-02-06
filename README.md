@@ -105,16 +105,22 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 | `$app_opened` | App became active (foreground) | - |
 | `$app_backgrounded` | App resigned active (background) | - |
 
-## Automatic Properties
+## Automatic Context/Properties
 
-The SDK automatically includes these properties with every event:
+Every event automatically includes:
 
-| Property | Description |
-|----------|-------------|
-| `$device_type` | Device type (`phone`, `tablet`) |
-| `$storage_type` | Storage type (`persistent` or `memory`) |
+| Field | Example | Description |
+|-------|---------|-------------|
+| `platform` | `"ios"` | Platform (ios, android) |
+| `os_version` | `"17.1"` | Operating system version |
+| `app_version` | `"1.0.0"` | App version (if configured) |
+| `environment` | `"production"` | Environment from configuration |
+| `session_id` | `"uuid..."` | Unique session ID (per app launch) |
+| `user_id` | `"user_123"` | User ID (if set via `identify()`) |
+| `$device_type` | `"phone"` | Device type (phone, tablet) |
+| `$storage_type` | `"persistent"` | Storage type (persistent or memory) |
 
-Additionally, `osVersion` and `appVersion` (if configured) are included at the event level.
+> **Note:** The `$` prefix indicates reserved system properties. Avoid using `$` prefix for your own custom properties.
 
 ## Event Naming
 
@@ -125,14 +131,14 @@ Event names must:
 
 ```typescript
 // Valid
-MostlyGoodMetrics.track('button_clicked');
-MostlyGoodMetrics.track('PurchaseCompleted');
-MostlyGoodMetrics.track('step_1_completed');
+MostlyGoodMetrics.track('button_clicked');      // lowercase with underscores
+MostlyGoodMetrics.track('PurchaseCompleted');   // camelCase
+MostlyGoodMetrics.track('step_1_completed');    // numbers after first char
 
 // Invalid (will be ignored)
-MostlyGoodMetrics.track('123_event');      // starts with number
-MostlyGoodMetrics.track('event-name');     // contains hyphen
-MostlyGoodMetrics.track('event name');     // contains space
+MostlyGoodMetrics.track('123_event');           // starts with number
+MostlyGoodMetrics.track('event-name');          // contains hyphen
+MostlyGoodMetrics.track('event name');          // contains space (not allowed)
 ```
 
 ## Properties
@@ -158,6 +164,34 @@ MostlyGoodMetrics.track('checkout', {
 - Nesting depth: max 3 levels
 - Total properties size: max 10KB
 
+## User Identification
+
+The SDK provides methods for identifying users and managing their identity:
+
+```typescript
+// Set user identity
+MostlyGoodMetrics.identify('user_123');
+
+// Reset identity (e.g., on logout)
+MostlyGoodMetrics.resetIdentity();
+```
+
+### Anonymous ID
+
+When no user is identified, the SDK generates an anonymous ID to track events consistently across sessions. This anonymous ID is persisted to AsyncStorage (if available) and survives app restarts.
+
+When you call `identify()`:
+- The user ID is stored and persisted to AsyncStorage
+- All subsequent events include this user ID
+- The user ID is restored automatically on app restart
+
+When you call `resetIdentity()`:
+- The stored user ID is cleared
+- A new anonymous ID is generated
+- Use this when users log out to ensure clean session separation
+
+**Note:** Without AsyncStorage, anonymous IDs and user IDs are stored in memory only and will not persist across app restarts.
+
 ## Manual Flush
 
 Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
@@ -173,6 +207,12 @@ const count = await MostlyGoodMetrics.getPendingEventCount();
 console.log(`${count} events pending`);
 ```
 
+To clear all pending events without sending them:
+
+```typescript
+MostlyGoodMetrics.clearPendingEvents();
+```
+
 ## Automatic Behavior
 
 The SDK automatically:
@@ -181,7 +221,9 @@ The SDK automatically:
 - **Batches events** for efficient network usage
 - **Flushes on interval** (default: every 30 seconds)
 - **Flushes on background** when the app goes to background
+- **Compresses payloads** using gzip for requests > 1KB
 - **Retries on failure** for network errors (events are preserved)
+- **Handles rate limiting** with exponential backoff
 - **Persists user ID** across app launches
 - **Generates session IDs** per app launch
 
