@@ -24,7 +24,12 @@ npm install @mostly-good-metrics/react-native @react-native-async-storage/async-
 cd ios && pod install
 ```
 
-**Note:** AsyncStorage is optional. Without it, events are stored in memory only (lost on app restart).
+**Note:** AsyncStorage is optional but recommended. Without it:
+- Events are stored in memory only and lost on app restart
+- User identity is not persisted between sessions
+- Install/update tracking may not work correctly
+
+The SDK gracefully falls back to in-memory storage when AsyncStorage is unavailable.
 
 ## Quick Start
 
@@ -171,29 +176,45 @@ MostlyGoodMetrics.track('checkout', {
 
 ## User Identification
 
-The SDK provides methods for identifying users and managing their identity:
+The SDK uses a session-based identification model with persistent user identity.
 
-```typescript
-// Set user identity
-MostlyGoodMetrics.identify('user_123');
-
-// Reset identity (e.g., on logout)
-MostlyGoodMetrics.resetIdentity();
-```
-
-### Anonymous ID
+### Anonymous Users
 
 When no user is identified, the SDK generates an anonymous ID to track events consistently across sessions. This anonymous ID is persisted to AsyncStorage (if available) and survives app restarts.
+
+### Identifying Users
+
+Call `identify()` when a user logs in or you know their identity:
+
+```typescript
+// Basic identification
+MostlyGoodMetrics.identify('user_123');
+
+// With optional profile data
+MostlyGoodMetrics.identify('user_123', {
+  email: 'user@example.com',
+  name: 'Jane Doe',
+});
+```
 
 When you call `identify()`:
 - The user ID is stored and persisted to AsyncStorage
 - All subsequent events include this user ID
 - The user ID is restored automatically on app restart
+- Profile data is sent to the server via a `$identify` event
+
+### Resetting Identity
+
+Call `resetIdentity()` when a user logs out:
+
+```typescript
+MostlyGoodMetrics.resetIdentity();
+```
 
 When you call `resetIdentity()`:
 - The stored user ID is cleared
-- A new anonymous ID is generated
-- Use this when users log out to ensure clean session separation
+- A new session ID is generated
+- Subsequent events will be tracked without a user association until `identify()` is called again
 
 **Note:** Without AsyncStorage, anonymous IDs and user IDs are stored in memory only and will not persist across app restarts.
 
@@ -246,15 +267,14 @@ MostlyGoodMetrics.clearPendingEvents();
 
 The SDK automatically:
 
-- **Persists events** to AsyncStorage, surviving app restarts
-- **Batches events** for efficient network usage
-- **Flushes on interval** (default: every 30 seconds)
-- **Flushes on background** when the app goes to background
-- **Compresses payloads** using gzip for requests > 1KB
-- **Retries on failure** for network errors (events are preserved)
-- **Handles rate limiting** with exponential backoff
-- **Persists user ID** across app launches
-- **Generates session IDs** per app launch
+- **Persists** events to AsyncStorage, surviving app restarts
+- **Batches** events for efficient network usage
+- **Flushes** events on interval (default: every 30 seconds) and when app backgrounds
+- **Compresses** payloads using gzip for requests > 1KB
+- **Retries** failed requests with exponential backoff (events are preserved)
+- **Handles** rate limiting and network errors gracefully without data loss
+- **Persists** user identity across app launches
+- **Generates** new session IDs on each app launch
 
 ## Debug Logging
 
@@ -276,37 +296,45 @@ Output example:
 
 ## Running the Example
 
-The example app demonstrates all SDK features and is built with Expo.
+The example app demonstrates SDK usage with a simple React Native application.
 
-### Expo (Recommended)
+### Setup
 
 ```bash
 cd example
 npm install
+```
+
+### Expo Go (Quickest)
+
+For quick testing with Expo Go:
+
+```bash
 npm start
 ```
 
-Then press `i` for iOS simulator or `a` for Android emulator.
+Then scan the QR code with the Expo Go app on your device, or press `i` for iOS simulator or `a` for Android emulator.
 
-To run directly on a specific platform:
+### iOS
 
 ```bash
-npm run ios      # iOS simulator
-npm run android  # Android emulator
+npx expo run:ios
 ```
 
-### Bare React Native
-
-If you've ejected from Expo or are using a bare React Native project, you'll need to install CocoaPods for iOS:
+Or for bare React Native workflow:
 
 ```bash
-cd example
-npm install
 cd ios && pod install && cd ..
 npm run ios
 ```
 
-For Android, just run:
+### Android
+
+```bash
+npx expo run:android
+```
+
+Or:
 
 ```bash
 npm run android
