@@ -7,16 +7,17 @@ A lightweight React Native SDK for tracking analytics events with [MostlyGoodMet
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [User Identification](#user-identification)
 - [Configuration Options](#configuration-options)
+- [User Identification](#user-identification)
+- [Tracking Events](#tracking-events)
+- [Event Naming](#event-naming)
+- [Properties](#properties)
 - [Automatic Events](#automatic-events)
 - [Automatic Properties](#automatic-properties)
 - [Automatic Context](#automatic-context)
-- [Event Naming](#event-naming)
-- [Properties](#properties)
-- [Manual Flush](#manual-flush)
 - [Automatic Behavior](#automatic-behavior)
 - [Framework Integration](#framework-integration)
+- [Manual Flush](#manual-flush)
 - [Debug Logging](#debug-logging)
 - [Running the Example](#running-the-example)
 - [License](#license)
@@ -83,29 +84,6 @@ MostlyGoodMetrics.resetIdentity();
 
 That's it! Events are automatically batched and sent.
 
-## User Identification
-
-The SDK automatically generates and persists an anonymous `distinctId` (UUID) for each user. This ID:
-- Is auto-generated on first app launch
-- Persists across app sessions (stored in AsyncStorage)
-- Is included in every event as `distinctId`
-
-When you call `identify()`, the identified user ID is stored as `userId` and also persists across sessions.
-
-```typescript
-// Before identify(): userId = null, distinctId = "550e8400-e29b-41d4-a716-446655440000" (auto-generated)
-MostlyGoodMetrics.identify('user_123');
-// After identify(): userId = "user_123", distinctId = "550e8400-e29b-41d4-a716-446655440000"
-
-MostlyGoodMetrics.resetIdentity();
-// After reset: userId = null, distinctId = "550e8400-e29b-41d4-a716-446655440000" (unchanged)
-```
-
-This dual-ID approach lets you:
-- Track anonymous users before login via `distinctId`
-- Associate events with known users via `userId`
-- Link pre-login and post-login behavior for the same user
-
 ## Configuration Options
 
 For more control, pass a configuration object:
@@ -136,6 +114,45 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
 
+## User Identification
+
+The SDK automatically generates and persists an anonymous `distinctId` (UUID) for each user. This ID:
+- Is auto-generated on first app launch
+- Persists across app sessions (stored in AsyncStorage)
+- Is included in every event as `distinctId`
+
+When you call `identify()`, the identified user ID is stored as `userId` and also persists across sessions.
+
+```typescript
+// Before identify(): userId = null, distinctId = "550e8400-e29b-41d4-a716-446655440000" (auto-generated)
+MostlyGoodMetrics.identify('user_123');
+// After identify(): userId = "user_123", distinctId = "550e8400-e29b-41d4-a716-446655440000"
+
+MostlyGoodMetrics.resetIdentity();
+// After reset: userId = null, distinctId = "550e8400-e29b-41d4-a716-446655440000" (unchanged)
+```
+
+This dual-ID approach lets you:
+- Track anonymous users before login via `distinctId`
+- Associate events with known users via `userId`
+- Link pre-login and post-login behavior for the same user
+
+## Tracking Events
+
+Track events with the `track()` method:
+
+```typescript
+// Simple event
+MostlyGoodMetrics.track('button_clicked');
+
+// Event with properties
+MostlyGoodMetrics.track('purchase_completed', {
+  product_id: 'SKU123',
+  price: 29.99,
+  currency: 'USD',
+});
+```
+
 ## Automatic Events
 
 When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
@@ -153,30 +170,59 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 
 The SDK automatically includes these properties with every event:
 
-| Property | Description | Example |
-|----------|-------------|---------|
-| `$device_type` | Device form factor | `phone`, `tablet` |
-| `$storage_type` | Event persistence method | `persistent`, `memory` |
+| Property | Description | Example | Source |
+|----------|-------------|---------|--------|
+| `$device_type` | Device form factor | `phone`, `tablet` | iOS: Detected from `Platform.isPad`<br>Android: Always `phone` (can be enhanced with device dimensions) |
+| `$storage_type` | Event persistence method | `persistent`, `memory` | `persistent` when AsyncStorage is available,<br>`memory` otherwise |
 
-Additionally, `osVersion` and `appVersion` (if configured) are included at the event level.
+### Additional Event-Level Fields
+
+These fields are included at the event level (not in properties):
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `osVersion` | Device OS version | `17.2` (iOS)<br>`31` (Android SDK) | `Platform.Version` |
+| `appVersion` | App version (if configured) | `1.2.0` | Configuration option |
+| `platform` | Platform identifier | `ios`, `android` | `Platform.OS` |
+| `sdk` | SDK identifier | `react-native` | Hardcoded |
+| `sdkVersion` | SDK version | `0.3.6` | Package version |
 
 ## Automatic Context
 
-The SDK automatically includes these fields with every event:
+The SDK automatically includes these fields with every event to provide rich context:
 
-| Field | Description | Example |
-|-------|-------------|---------|
-| `client_event_id` | Unique UUID for each event (for deduplication) | `550e8400-e29b-41d4-a716-446655440000` |
-| `timestamp` | ISO 8601 timestamp when event was tracked | `2024-01-15T10:30:00.000Z` |
-| `userId` | Identified user ID (set via `identify()`) | `user_123` |
-| `distinctId` | Anonymous UUID (auto-generated, persisted) | `550e8400-e29b-41d4-a716-446655440000` |
-| `sessionId` | UUID generated per app launch | `abc123-def456` |
-| `platform` | Platform identifier | `ios`, `android` |
-| `environment` | Environment name (default: `production`) | `production`, `staging` |
-| `osVersion` | Device OS version | `17.2` |
-| `appVersion` | App version (if configured) | `1.2.0` |
-| `locale` | User's locale | `en-US` |
-| `timezone` | User's timezone | `America/New_York` |
+### Identity & Session
+
+| Field | Description | Example | Persistence |
+|-------|-------------|---------|-------------|
+| `userId` | Identified user ID (set via `identify()`) | `user_123` | Persisted in AsyncStorage (survives app restarts) |
+| `distinctId` | Anonymous UUID (auto-generated) | `550e8400-e29b-41d4-a716-446655440000` | Persisted in AsyncStorage (survives app restarts) |
+| `sessionId` | UUID generated per app launch | `abc123-def456` | Regenerated on each app launch |
+
+### Device & Platform
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `platform` | Platform identifier | `ios`, `android` | `Platform.OS` |
+| `osVersion` | Device OS version | `17.2` (iOS)<br>`31` (Android SDK version) | `Platform.Version` |
+| `locale` | User's locale | `en-US` | JavaScript SDK (from `Intl.DateTimeFormat`) |
+| `timezone` | User's timezone | `America/New_York` | JavaScript SDK (from `Intl.DateTimeFormat`) |
+
+### App & Environment
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `appVersion` | App version (if configured) | `1.2.0` | Configuration option |
+| `environment` | Environment name | `production`, `staging`, `development` | Configuration option (default: `production`) |
+| `sdk` | SDK identifier | `react-native` | Hardcoded |
+| `sdkVersion` | SDK version | `0.3.6` | Package version |
+
+### Event Metadata
+
+| Field | Description | Example | Purpose |
+|-------|-------------|---------|---------|
+| `client_event_id` | Unique UUID for each event | `550e8400-e29b-41d4-a716-446655440000` | Deduplication (prevents processing the same event twice) |
+| `timestamp` | ISO 8601 timestamp when event was tracked | `2024-01-15T10:30:00.000Z` | Event ordering and time-based analysis |
 
 ## Event Naming
 
@@ -240,39 +286,72 @@ console.log(`${count} events pending`);
 
 ## Automatic Behavior
 
-The SDK automatically:
+The SDK handles many tasks automatically to provide a seamless analytics experience:
 
-- **Generates anonymous user ID** (UUID, persisted in AsyncStorage)
-- **Persists events** to AsyncStorage (with in-memory fallback)
-- **Batches events** for efficient network usage
-- **Flushes on interval** (default: every 30 seconds)
-- **Flushes on background** when the app enters the background
-- **Retries on failure** for network errors (events are preserved)
-- **Handles rate limiting** with exponential backoff
-- **Persists identified user ID** across app launches
-- **Generates session IDs** per app launch
-- **Adds deduplication IDs** to prevent duplicate event processing
-- **Detects install/update** when `appVersion` is configured
-- **Tracks lifecycle events** (`$app_opened`, `$app_backgrounded`) when enabled
+### Identity Management
+- **Generates anonymous user ID**: Creates a persistent UUID (`distinctId`) on first app launch, stored in AsyncStorage
+- **Persists identified user ID**: Stores `userId` (from `identify()`) in AsyncStorage, automatically restored on app restart
+- **Generates session IDs**: Creates a new UUID on each app launch to track user sessions
+
+### Event Storage & Delivery
+- **Persists events**: Stores events in AsyncStorage (with in-memory fallback if AsyncStorage unavailable)
+- **Batches events**: Groups events together for efficient network usage (default: 100 events per batch)
+- **Flushes on interval**: Automatically sends events every 30 seconds (configurable)
+- **Flushes on background**: Sends pending events when app enters background
+- **Retries on failure**: Preserves events on network errors and retries with exponential backoff
+- **Handles rate limiting**: Automatically backs off when server rate limits are hit
+- **Adds deduplication IDs**: Includes unique `client_event_id` with each event to prevent duplicate processing
+
+### Lifecycle Tracking
+When `trackAppLifecycleEvents` is enabled (default), the SDK automatically:
+- **Detects install**: Tracks `$app_installed` event on first launch (requires `appVersion` config)
+- **Detects updates**: Tracks `$app_updated` event when app version changes (requires `appVersion` config)
+- **Tracks app foreground**: Fires `$app_opened` when app becomes active
+- **Tracks app background**: Fires `$app_backgrounded` when app goes to background
+- **Deduplicates lifecycle events**: Ignores duplicate events that fire within 1 second
+
+### Platform Integration
+- **Detects device type**: Automatically identifies phone vs tablet (iOS only, Android always reports phone)
+- **Captures OS version**: Includes device operating system version with every event
+- **Captures locale**: Includes user's language/region setting
+- **Captures timezone**: Includes user's timezone for accurate time-based analysis
 
 ## Framework Integration
 
-### Expo
+The SDK supports both Expo and Bare React Native projects with slightly different setup requirements.
 
-Expo projects require no additional configuration. The SDK works out of the box.
+### Expo (Recommended)
 
-For automatic app version tracking, use `expo-constants`:
+Expo projects work out of the box with **zero additional dependencies**. Expo includes AsyncStorage by default, so events automatically persist across app restarts.
+
+#### Basic Setup
+
+```typescript
+import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
+
+MostlyGoodMetrics.configure('mgm_proj_your_api_key');
+```
+
+#### App Version Tracking (Recommended)
+
+To enable install/update detection, use `expo-constants` to access your app version:
+
+```bash
+npx expo install expo-constants
+```
 
 ```typescript
 import Constants from 'expo-constants';
 import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
 
 MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
-  appVersion: Constants.expoConfig?.version,
+  appVersion: Constants.expoConfig?.version, // Enables $app_installed and $app_updated events
 });
 ```
 
-To configure the SDK at build time, add to your `app.json`:
+#### Build-Time Configuration
+
+For better security, configure the API key at build time using `app.json`:
 
 ```json
 {
@@ -286,7 +365,7 @@ To configure the SDK at build time, add to your `app.json`:
 }
 ```
 
-Then access via `expo-constants`:
+Then access it via `expo-constants`:
 
 ```typescript
 import Constants from 'expo-constants';
@@ -297,14 +376,38 @@ MostlyGoodMetrics.configure(Constants.expoConfig?.extra?.mgmApiKey, {
 });
 ```
 
+**Note:** The API key in `extra` is not secure - it's bundled into your app. For production apps, consider using environment-specific builds or Expo's EAS Secrets.
+
 ### Bare React Native
 
-Ensure AsyncStorage is installed for event persistence:
+Bare React Native projects require AsyncStorage to be installed separately for event persistence.
+
+#### Installation
 
 ```bash
-npm install @react-native-async-storage/async-storage
+npm install @mostly-good-metrics/react-native @react-native-async-storage/async-storage
 cd ios && pod install
 ```
+
+#### Setup
+
+```typescript
+import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
+import { version } from './package.json';
+
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  appVersion: version, // Use your package.json version
+});
+```
+
+#### Without AsyncStorage (Not Recommended)
+
+The SDK will work without AsyncStorage, but with significant limitations:
+- Events are stored **in memory only** (lost on app restart)
+- User identity (`userId`, `distinctId`) is **not persisted** (new anonymous ID on each launch)
+- Install/update detection **will not work**
+
+For production apps, **always install AsyncStorage** to ensure reliable analytics.
 
 ## Debug Logging
 
@@ -326,23 +429,77 @@ Output example:
 
 ## Running the Example
 
+The SDK includes an example Expo app demonstrating all features.
+
+### Prerequisites
+
+- Node.js 16+ and npm
+- For iOS: macOS with Xcode installed
+- For Android: Android Studio with an emulator configured
+
+### Setup
+
+1. Navigate to the example directory:
+
 ```bash
 cd example
+```
+
+2. Install dependencies:
+
+```bash
 npm install
 ```
 
-For iOS:
+### Running on iOS
 
+```bash
+npm run ios
+```
+
+This will:
+- Start the Metro bundler
+- Launch the iOS Simulator
+- Install and run the example app
+
+**Troubleshooting:** If you get a CocoaPods error, try:
 ```bash
 cd ios && pod install && cd ..
 npm run ios
 ```
 
-For Android:
+### Running on Android
 
 ```bash
 npm run android
 ```
+
+This will:
+- Start the Metro bundler
+- Launch your Android emulator (if not already running)
+- Install and run the example app
+
+**Troubleshooting:** If you get a "No connected devices" error, start an emulator first:
+```bash
+# List available emulators
+emulator -list-avds
+
+# Start an emulator (replace with your emulator name)
+emulator -avd Pixel_5_API_31
+```
+
+### What the Example Demonstrates
+
+The example app includes:
+- SDK initialization with configuration
+- User identification and reset
+- Tracking custom events with properties
+- Automatic lifecycle event tracking
+- Manual flush trigger
+- Pending event count display
+- Debug logging output
+
+Check the Metro bundler console to see the SDK's debug output as you interact with the app.
 
 ## License
 
