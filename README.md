@@ -7,18 +7,17 @@ A lightweight React Native SDK for tracking analytics events with [MostlyGoodMet
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Configuration Options](#configuration-options)
 - [User Identification](#user-identification)
-- [Tracking Events](#tracking-events)
-- [Event Naming](#event-naming)
-- [Properties](#properties)
+- [Configuration Options](#configuration-options)
+- [Automatic Events](#automatic-events)
 - [Automatic Properties](#automatic-properties)
 - [Automatic Context](#automatic-context)
-- [Automatic Events](#automatic-events)
-- [Automatic Behavior](#automatic-behavior)
-- [Framework Integration](#framework-integration)
+- [Event Naming](#event-naming)
+- [Properties](#properties)
 - [Manual Flush](#manual-flush)
+- [Automatic Behavior](#automatic-behavior)
 - [Debug Logging](#debug-logging)
+- [Framework Integration](#framework-integration)
 - [Running the Example](#running-the-example)
 - [License](#license)
 
@@ -84,6 +83,64 @@ MostlyGoodMetrics.resetIdentity();
 
 That's it! Events are automatically batched and sent.
 
+## User Identification
+
+The SDK uses a **dual-ID system** to track both anonymous and identified users seamlessly.
+
+### Anonymous Tracking (`distinctId`)
+
+Every user automatically gets a persistent anonymous ID called `distinctId`:
+- **Auto-generated**: Created as a UUID on first app launch
+- **Persists forever**: Stored in AsyncStorage, survives app restarts
+- **Always present**: Included in every event, even before `identify()` is called
+- **Never changes**: Remains the same even after `identify()` or `resetIdentity()`
+
+### Identified Users (`userId`)
+
+When a user logs in or creates an account, call `identify()` to associate events with a known user:
+
+```typescript
+MostlyGoodMetrics.identify('user_123');
+```
+
+This sets the `userId` field which:
+- **Persists across sessions**: Stored in AsyncStorage, restored on app restart
+- **Complements distinctId**: Both IDs are sent with every event
+- **Survives logout**: Cleared only when you call `resetIdentity()`
+
+### How It Works
+
+```typescript
+// Initial state (anonymous user)
+// userId: null
+// distinctId: "550e8400-e29b-41d4-a716-446655440000" (auto-generated)
+
+// User logs in
+MostlyGoodMetrics.identify('user_123');
+// userId: "user_123"
+// distinctId: "550e8400-e29b-41d4-a716-446655440000" (unchanged)
+
+// User logs out
+MostlyGoodMetrics.resetIdentity();
+// userId: null (cleared)
+// distinctId: "550e8400-e29b-41d4-a716-446655440000" (unchanged)
+```
+
+### Why Two IDs?
+
+This dual-ID approach enables powerful analytics:
+
+1. **Track anonymous users**: Use `distinctId` to follow user behavior before they sign up
+2. **Track identified users**: Use `userId` to associate events with known accounts
+3. **Link pre/post-login behavior**: Since `distinctId` never changes, you can connect a user's anonymous activity to their identified account
+4. **Handle multiple devices**: Same user on different devices gets different `distinctId` but same `userId`
+
+### Best Practices
+
+- **Call `identify()` on login**: As soon as a user authenticates, call `identify()` with their user ID
+- **Call `resetIdentity()` on logout**: Clear the `userId` to stop associating events with the logged-out user
+- **Use stable user IDs**: Pass your internal user ID (database primary key, UUID, etc.) to `identify()` - not email addresses which can change
+
 ## Configuration Options
 
 For more control, pass a configuration object:
@@ -114,89 +171,18 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
 
-## User Identification
+## Automatic Events
 
-The SDK automatically generates and persists an anonymous `distinctId` (UUID) for each user. This ID:
-- Is auto-generated on first app launch
-- Persists across app sessions (stored in AsyncStorage)
-- Is included in every event as `distinctId`
+When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
 
-When you call `identify()`, the identified user ID is stored as `userId` and also persists across sessions.
+| Event | When | Properties |
+|-------|------|------------|
+| `$app_installed` | First launch after install | `$version` |
+| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
+| `$app_opened` | App became active (foreground) | - |
+| `$app_backgrounded` | App resigned active (background) | - |
 
-```typescript
-// Before identify(): userId = null, distinctId = "550e8400-e29b-41d4-a716-446655440000" (auto-generated)
-MostlyGoodMetrics.identify('user_123');
-// After identify(): userId = "user_123", distinctId = "550e8400-e29b-41d4-a716-446655440000"
-
-MostlyGoodMetrics.resetIdentity();
-// After reset: userId = null, distinctId = "550e8400-e29b-41d4-a716-446655440000" (unchanged)
-```
-
-This dual-ID approach lets you:
-- Track anonymous users before login via `distinctId`
-- Associate events with known users via `userId`
-- Link pre-login and post-login behavior for the same user
-
-## Tracking Events
-
-Track events with the `track()` method:
-
-```typescript
-// Simple event
-MostlyGoodMetrics.track('button_clicked');
-
-// Event with properties
-MostlyGoodMetrics.track('purchase_completed', {
-  product_id: 'SKU123',
-  price: 29.99,
-  currency: 'USD',
-});
-```
-
-## Event Naming
-
-Event names must:
-- Start with a letter (or `$` for system events)
-- Contain only alphanumeric characters and underscores
-- Be 255 characters or less
-
-> **Reserved `$` prefix:** Event names starting with `$` are reserved for SDK system events (e.g., `$app_opened`, `$app_installed`). Do not use the `$` prefix for your own events.
-
-```typescript
-// Valid
-MostlyGoodMetrics.track('button_clicked');
-MostlyGoodMetrics.track('PurchaseCompleted');
-MostlyGoodMetrics.track('step_1_completed');
-
-// Invalid (will be ignored)
-MostlyGoodMetrics.track('123_event');      // starts with number
-MostlyGoodMetrics.track('event-name');     // contains hyphen
-MostlyGoodMetrics.track('event name');     // contains space
-MostlyGoodMetrics.track('$custom_event');  // $ prefix is reserved
-```
-
-## Properties
-
-Events support various property types:
-
-```typescript
-MostlyGoodMetrics.track('checkout', {
-  string_prop: 'value',
-  int_prop: 42,
-  double_prop: 3.14,
-  bool_prop: true,
-  null_prop: null,
-  list_prop: ['a', 'b', 'c'],
-  nested: {
-    key: 'value',
-  },
-});
-```
-
-**Limits:**
-- String values: truncated to 1000 characters
-- Nesting depth: max 3 levels
-- Total properties size: max 10KB
+> **Note:** Install and update detection require `appVersion` to be configured.
 
 ## Automatic Properties
 
@@ -251,18 +237,65 @@ Every event automatically includes the following context fields to provide rich 
 
 > **Note:** Fields are automatically included with every event. You don't need to manually add any of these fields.
 
-## Automatic Events
+## Event Naming
 
-When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
+Event names must:
+- Start with a letter (or `$` for system events)
+- Contain only alphanumeric characters and underscores
+- Be 255 characters or less
 
-| Event | When | Properties |
-|-------|------|------------|
-| `$app_installed` | First launch after install | `$version` |
-| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
-| `$app_opened` | App became active (foreground) | - |
-| `$app_backgrounded` | App resigned active (background) | - |
+```typescript
+// Valid
+MostlyGoodMetrics.track('button_clicked');
+MostlyGoodMetrics.track('PurchaseCompleted');
+MostlyGoodMetrics.track('step_1_completed');
 
-> **Note:** Install and update detection require `appVersion` to be configured.
+// Invalid (will be ignored)
+MostlyGoodMetrics.track('123_event');      // starts with number
+MostlyGoodMetrics.track('event-name');     // contains hyphen
+MostlyGoodMetrics.track('event name');     // contains space
+MostlyGoodMetrics.track('$custom_event');  // $ prefix is reserved
+```
+
+> **Note:** Event names starting with `$` are reserved for SDK system events (e.g., `$app_opened`, `$app_installed`). Do not use the `$` prefix for your own events.
+
+## Properties
+
+Events support various property types:
+
+```typescript
+MostlyGoodMetrics.track('checkout', {
+  string_prop: 'value',
+  int_prop: 42,
+  double_prop: 3.14,
+  bool_prop: true,
+  null_prop: null,
+  list_prop: ['a', 'b', 'c'],
+  nested: {
+    key: 'value',
+  },
+});
+```
+
+**Limits:**
+- String values: truncated to 1000 characters
+- Nesting depth: max 3 levels
+- Total properties size: max 10KB
+
+## Manual Flush
+
+Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
+
+```typescript
+MostlyGoodMetrics.flush();
+```
+
+To check pending events:
+
+```typescript
+const count = await MostlyGoodMetrics.getPendingEventCount();
+console.log(`${count} events pending`);
+```
 
 ## Automatic Behavior
 
@@ -329,6 +362,24 @@ When `trackAppLifecycleEvents` is enabled (default: `true`), the SDK automatical
 - **Captures device manufacturer**: Includes device manufacturer for device analytics
   - iOS: Always "Apple"
   - Android: From `Build.MANUFACTURER` (e.g., "Google", "Samsung")
+
+## Debug Logging
+
+Enable debug logging to see SDK activity:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  enableDebugLogging: true,
+});
+```
+
+Output example:
+```
+[MostlyGoodMetrics] Configuring with options: {...}
+[MostlyGoodMetrics] Setting up lifecycle tracking
+[MostlyGoodMetrics] App opened (foreground)
+[MostlyGoodMetrics] Flushing events
+```
 
 ## Framework Integration
 
@@ -492,39 +543,6 @@ The SDK will work without AsyncStorage installed, but with **significant limitat
 | **Configuration** | `app.json` or code | Code only |
 | **Pod install (iOS)** | ✅ Handled by Expo | ⚠️ Required manually |
 | **Recommended for** | New projects, rapid development | Projects needing native modules |
-
-## Manual Flush
-
-Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
-
-```typescript
-MostlyGoodMetrics.flush();
-```
-
-To check pending events:
-
-```typescript
-const count = await MostlyGoodMetrics.getPendingEventCount();
-console.log(`${count} events pending`);
-```
-
-## Debug Logging
-
-Enable debug logging to see SDK activity:
-
-```typescript
-MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
-  enableDebugLogging: true,
-});
-```
-
-Output example:
-```
-[MostlyGoodMetrics] Configuring with options: {...}
-[MostlyGoodMetrics] Setting up lifecycle tracking
-[MostlyGoodMetrics] App opened (foreground)
-[MostlyGoodMetrics] Flushing events
-```
 
 ## Running the Example
 
