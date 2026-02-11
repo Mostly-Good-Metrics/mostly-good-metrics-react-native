@@ -12,9 +12,9 @@ A lightweight React Native SDK for tracking analytics events with [MostlyGoodMet
 - [Tracking Events](#tracking-events)
 - [Event Naming](#event-naming)
 - [Properties](#properties)
-- [Automatic Events](#automatic-events)
 - [Automatic Properties](#automatic-properties)
 - [Automatic Context](#automatic-context)
+- [Automatic Events](#automatic-events)
 - [Automatic Behavior](#automatic-behavior)
 - [Framework Integration](#framework-integration)
 - [Manual Flush](#manual-flush)
@@ -153,77 +153,6 @@ MostlyGoodMetrics.track('purchase_completed', {
 });
 ```
 
-## Automatic Events
-
-When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
-
-| Event | When | Properties |
-|-------|------|------------|
-| `$app_installed` | First launch after install | `$version` |
-| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
-| `$app_opened` | App became active (foreground) | - |
-| `$app_backgrounded` | App resigned active (background) | - |
-
-> **Note:** Install and update detection require `appVersion` to be configured.
-
-## Automatic Properties
-
-The SDK automatically includes these properties with every event:
-
-| Property | Description | Example | Source |
-|----------|-------------|---------|--------|
-| `$device_type` | Device form factor | `phone`, `tablet` | iOS: Detected from `Platform.isPad`<br>Android: Always `phone` (can be enhanced with device dimensions) |
-| `$storage_type` | Event persistence method | `persistent`, `memory` | `persistent` when AsyncStorage is available,<br>`memory` otherwise |
-
-### Additional Event-Level Fields
-
-These fields are included at the event level (not in properties):
-
-| Field | Description | Example | Source |
-|-------|-------------|---------|--------|
-| `osVersion` | Device OS version | `17.2` (iOS)<br>`31` (Android SDK) | `Platform.Version` |
-| `appVersion` | App version (if configured) | `1.2.0` | Configuration option |
-| `platform` | Platform identifier | `ios`, `android` | `Platform.OS` |
-| `sdk` | SDK identifier | `react-native` | Hardcoded |
-| `sdkVersion` | SDK version | `0.3.6` | Package version |
-
-## Automatic Context
-
-The SDK automatically includes these fields with every event to provide rich context:
-
-### Identity & Session
-
-| Field | Description | Example | Persistence |
-|-------|-------------|---------|-------------|
-| `userId` | Identified user ID (set via `identify()`) | `user_123` | Persisted in AsyncStorage (survives app restarts) |
-| `distinctId` | Anonymous UUID (auto-generated) | `550e8400-e29b-41d4-a716-446655440000` | Persisted in AsyncStorage (survives app restarts) |
-| `sessionId` | UUID generated per app launch | `abc123-def456` | Regenerated on each app launch |
-
-### Device & Platform
-
-| Field | Description | Example | Source |
-|-------|-------------|---------|--------|
-| `platform` | Platform identifier | `ios`, `android` | `Platform.OS` |
-| `osVersion` | Device OS version | `17.2` (iOS)<br>`31` (Android SDK version) | `Platform.Version` |
-| `locale` | User's locale | `en-US` | JavaScript SDK (from `Intl.DateTimeFormat`) |
-| `timezone` | User's timezone | `America/New_York` | JavaScript SDK (from `Intl.DateTimeFormat`) |
-
-### App & Environment
-
-| Field | Description | Example | Source |
-|-------|-------------|---------|--------|
-| `appVersion` | App version (if configured) | `1.2.0` | Configuration option |
-| `environment` | Environment name | `production`, `staging`, `development` | Configuration option (default: `production`) |
-| `sdk` | SDK identifier | `react-native` | Hardcoded |
-| `sdkVersion` | SDK version | `0.3.6` | Package version |
-
-### Event Metadata
-
-| Field | Description | Example | Purpose |
-|-------|-------------|---------|---------|
-| `client_event_id` | Unique UUID for each event | `550e8400-e29b-41d4-a716-446655440000` | Deduplication (prevents processing the same event twice) |
-| `timestamp` | ISO 8601 timestamp when event was tracked | `2024-01-15T10:30:00.000Z` | Event ordering and time-based analysis |
-
 ## Event Naming
 
 Event names must:
@@ -269,60 +198,152 @@ MostlyGoodMetrics.track('checkout', {
 - Nesting depth: max 3 levels
 - Total properties size: max 10KB
 
-## Manual Flush
+## Automatic Properties
 
-Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
+The SDK automatically includes these properties with every event:
 
-```typescript
-MostlyGoodMetrics.flush();
-```
+| Property | Description | Example | Source |
+|----------|-------------|---------|--------|
+| `$device_type` | Device form factor | `phone`, `tablet` | iOS: Detected from `Platform.isPad`<br>Android: Always `phone` (can be enhanced with device dimensions) |
+| `$device_model` | Device model identifier | `iPhone15,2` (iOS)<br>`Pixel 8` (Android) | iOS: Hardware identifier via native modules<br>Android: `Build.MODEL` |
+| `$storage_type` | Event persistence method | `persistent`, `memory` | `persistent` when AsyncStorage is available,<br>`memory` otherwise |
 
-To check pending events:
+> **Note:** Properties with the `$` prefix are reserved for system use. Do not use the `$` prefix for your own custom properties.
 
-```typescript
-const count = await MostlyGoodMetrics.getPendingEventCount();
-console.log(`${count} events pending`);
-```
+## Automatic Context
+
+Every event automatically includes the following context fields to provide rich analytics capabilities:
+
+### Identity & Session
+
+| Field | Description | Example | Persistence |
+|-------|-------------|---------|-------------|
+| `userId` | Identified user ID (set via `identify()`) | `user_123` | Persisted in AsyncStorage (survives app restarts) |
+| `distinctId` | Anonymous UUID (auto-generated) | `550e8400-e29b-41d4-a716-446655440000` | Persisted in AsyncStorage (survives app restarts) |
+| `sessionId` | UUID generated per app launch | `abc123-def456` | Regenerated on each app launch |
+
+### Device & Platform
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `platform` | Platform identifier | `ios`, `android` | `Platform.OS` |
+| `osVersion` | Device OS version | `17.2` (iOS)<br>`31` (Android SDK version) | `Platform.Version` |
+| `deviceManufacturer` | Device manufacturer | `Apple` (iOS)<br>`Google` (Android) | iOS: Always "Apple"<br>Android: `Build.MANUFACTURER` |
+| `locale` | User's locale | `en-US`, `fr-FR` | `Intl.DateTimeFormat().resolvedOptions().locale` |
+| `timezone` | User's timezone | `America/New_York`, `Europe/Paris` | `Intl.DateTimeFormat().resolvedOptions().timeZone` |
+
+### App & Environment
+
+| Field | Description | Example | Source |
+|-------|-------------|---------|--------|
+| `appVersion` | App version (if configured) | `1.2.0` | Configuration option (recommended: from `package.json` or `expo-constants`) |
+| `appBuildNumber` | App build number (if available) | `42` | Optional: Can be set via configuration |
+| `environment` | Environment name | `production`, `staging`, `development` | Configuration option (default: `production`) |
+| `sdk` | SDK identifier | `react-native` | Hardcoded |
+| `sdkVersion` | SDK version | `0.3.6` | Package version |
+
+### Event Metadata
+
+| Field | Description | Example | Purpose |
+|-------|-------------|---------|---------|
+| `client_event_id` | Unique UUID for each event | `550e8400-e29b-41d4-a716-446655440000` | Deduplication (prevents processing the same event twice) |
+| `timestamp` | ISO 8601 timestamp when event was tracked | `2024-01-15T10:30:00.000Z` | Event ordering and time-based analysis |
+
+> **Note:** Fields are automatically included with every event. You don't need to manually add any of these fields.
+
+## Automatic Events
+
+When `trackAppLifecycleEvents` is enabled (default), the SDK automatically tracks:
+
+| Event | When | Properties |
+|-------|------|------------|
+| `$app_installed` | First launch after install | `$version` |
+| `$app_updated` | First launch after version change | `$version`, `$previous_version` |
+| `$app_opened` | App became active (foreground) | - |
+| `$app_backgrounded` | App resigned active (background) | - |
+
+> **Note:** Install and update detection require `appVersion` to be configured.
 
 ## Automatic Behavior
 
-The SDK handles many tasks automatically to provide a seamless analytics experience:
+The SDK handles many tasks automatically to provide a seamless analytics experience. You don't need to manually manage any of these features - they work out of the box.
 
 ### Identity Management
-- **Generates anonymous user ID**: Creates a persistent UUID (`distinctId`) on first app launch, stored in AsyncStorage
+
+- **Generates anonymous user ID**: Creates a persistent UUID (`distinctId`) on first app launch, stored in AsyncStorage (or memory if AsyncStorage unavailable)
 - **Persists identified user ID**: Stores `userId` (from `identify()`) in AsyncStorage, automatically restored on app restart
 - **Generates session IDs**: Creates a new UUID on each app launch to track user sessions
+- **Handles identity reset**: Clears `userId` but preserves `distinctId` when `resetIdentity()` is called (useful for logout flows)
 
 ### Event Storage & Delivery
-- **Persists events**: Stores events in AsyncStorage (with in-memory fallback if AsyncStorage unavailable)
-- **Batches events**: Groups events together for efficient network usage (default: 100 events per batch)
-- **Flushes on interval**: Automatically sends events every 30 seconds (configurable)
-- **Flushes on background**: Sends pending events when app enters background
-- **Retries on failure**: Preserves events on network errors and retries with exponential backoff
-- **Handles rate limiting**: Automatically backs off when server rate limits are hit
-- **Adds deduplication IDs**: Includes unique `client_event_id` with each event to prevent duplicate processing
+
+- **Persists events**: Stores events in AsyncStorage for durability across app restarts (with in-memory fallback if AsyncStorage unavailable)
+- **Batches events**: Groups events together for efficient network usage (default: 100 events per batch, configurable via `maxBatchSize`)
+- **Flushes on interval**: Automatically sends events every 30 seconds (configurable via `flushInterval`)
+- **Flushes on background**: Sends pending events when app enters background to ensure data is captured even if app is killed
+- **Retries on failure**: Preserves events on network errors and retries with exponential backoff (2s, 4s, 8s, etc.)
+- **Handles rate limiting**: Automatically backs off when server rate limits are hit (HTTP 429 responses)
+- **Adds deduplication IDs**: Includes unique `client_event_id` with each event to prevent duplicate processing on the server
+- **Enforces event limits**: Caps stored events at `maxStoredEvents` (default: 10,000) to prevent unbounded storage growth
 
 ### Lifecycle Tracking
-When `trackAppLifecycleEvents` is enabled (default), the SDK automatically:
-- **Detects install**: Tracks `$app_installed` event on first launch (requires `appVersion` config)
-- **Detects updates**: Tracks `$app_updated` event when app version changes (requires `appVersion` config)
-- **Tracks app foreground**: Fires `$app_opened` when app becomes active
-- **Tracks app background**: Fires `$app_backgrounded` when app goes to background
-- **Deduplicates lifecycle events**: Ignores duplicate events that fire within 1 second
+
+When `trackAppLifecycleEvents` is enabled (default: `true`), the SDK automatically tracks app lifecycle events using React Native's `AppState` API:
+
+#### Install Detection
+- **Event**: `$app_installed`
+- **When**: First launch after install (determined by absence of stored version)
+- **Properties**: `$version` (current app version)
+- **Requires**: `appVersion` configuration option
+
+#### Update Detection
+- **Event**: `$app_updated`
+- **When**: First launch after version change (compares stored version with current)
+- **Properties**: `$version` (new version), `$previous_version` (old version)
+- **Requires**: `appVersion` configuration option
+
+#### App Foreground
+- **Event**: `$app_opened`
+- **When**: App state changes to "active" (user returns to app or launches it)
+- **Frequency**: Can fire multiple times per session (e.g., after backgrounding and returning)
+- **Deduplication**: Ignores duplicate events within 1 second
+
+#### App Background
+- **Event**: `$app_backgrounded`
+- **When**: App state changes from "active" to "background" or "inactive"
+- **Behavior**: Automatically triggers a flush to ensure events are sent before app suspension
+- **Deduplication**: Ignores duplicate events within 1 second
+
+> **Note:** Install and update detection require `appVersion` to be configured. Without it, these events will not fire.
 
 ### Platform Integration
-- **Detects device type**: Automatically identifies phone vs tablet (iOS only, Android always reports phone)
-- **Captures OS version**: Includes device operating system version with every event
-- **Captures locale**: Includes user's language/region setting
-- **Captures timezone**: Includes user's timezone for accurate time-based analysis
+
+- **Detects device type**: Automatically identifies phone vs tablet based on device form factor
+  - iOS: Uses `Platform.isPad` to detect iPads
+  - Android: Always reports `phone` (tablet detection can be added via screen dimensions if needed)
+- **Captures OS version**: Includes device operating system version with every event via `Platform.Version`
+  - iOS: Returns semantic version (e.g., "17.2")
+  - Android: Returns SDK version number (e.g., "31" for Android 12)
+- **Captures locale**: Includes user's language/region setting via JavaScript `Intl` API (e.g., "en-US", "fr-FR")
+- **Captures timezone**: Includes user's timezone for accurate time-based analysis via JavaScript `Intl` API (e.g., "America/New_York")
+- **Captures device manufacturer**: Includes device manufacturer for device analytics
+  - iOS: Always "Apple"
+  - Android: From `Build.MANUFACTURER` (e.g., "Google", "Samsung")
 
 ## Framework Integration
 
-The SDK supports both Expo and Bare React Native projects with slightly different setup requirements.
+The SDK supports both Expo and Bare React Native projects. Choose the setup that matches your project type.
 
 ### Expo (Recommended)
 
-Expo projects work out of the box with **zero additional dependencies**. Expo includes AsyncStorage by default, so events automatically persist across app restarts.
+Expo projects provide the **easiest setup** with zero additional dependencies. Expo includes AsyncStorage by default in the managed workflow, so events automatically persist across app restarts.
+
+#### Why Expo?
+
+- ✅ **No additional dependencies** - AsyncStorage is built-in
+- ✅ **Easy version management** - Access app version via `expo-constants`
+- ✅ **Simple configuration** - Use `app.json` for environment-specific settings
+- ✅ **Works with all Expo workflows** - Managed, bare, and custom dev clients
 
 #### Basic Setup
 
@@ -332,32 +353,48 @@ import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
 MostlyGoodMetrics.configure('mgm_proj_your_api_key');
 ```
 
+That's it! Events will be tracked and persisted automatically.
+
 #### App Version Tracking (Recommended)
 
-To enable install/update detection, use `expo-constants` to access your app version:
+To enable automatic install/update detection (`$app_installed` and `$app_updated` events), add `expo-constants`:
 
 ```bash
 npx expo install expo-constants
 ```
+
+Then configure with your app version:
 
 ```typescript
 import Constants from 'expo-constants';
 import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
 
 MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
-  appVersion: Constants.expoConfig?.version, // Enables $app_installed and $app_updated events
+  appVersion: Constants.expoConfig?.version, // e.g., "1.2.0" from app.json
+  environment: __DEV__ ? 'development' : 'production',
 });
 ```
 
-#### Build-Time Configuration
-
-For better security, configure the API key at build time using `app.json`:
+The version is read from your `app.json`:
 
 ```json
 {
   "expo": {
     "name": "MyApp",
-    "version": "1.0.0",
+    "version": "1.2.0"
+  }
+}
+```
+
+#### Build-Time Configuration (Expo)
+
+For cleaner code and environment-specific configuration, store your API key in `app.json`:
+
+```json
+{
+  "expo": {
+    "name": "MyApp",
+    "version": "1.2.0",
     "extra": {
       "mgmApiKey": "mgm_proj_your_api_key"
     }
@@ -376,38 +413,100 @@ MostlyGoodMetrics.configure(Constants.expoConfig?.extra?.mgmApiKey, {
 });
 ```
 
-**Note:** The API key in `extra` is not secure - it's bundled into your app. For production apps, consider using environment-specific builds or Expo's EAS Secrets.
+**Security Note:** The `extra` field is bundled into your app JavaScript and is **not secure** - anyone can decompile your app and read it. For production apps, consider:
+- Using environment-specific `app.json` files (e.g., `app.production.json`)
+- Using [EAS Secrets](https://docs.expo.dev/build-reference/variables/) for API keys
+- Implementing server-side event validation
+
+#### Expo Bare Workflow
+
+If you're using Expo's bare workflow, follow the [Bare React Native](#bare-react-native) instructions below since you need to install AsyncStorage manually.
 
 ### Bare React Native
 
-Bare React Native projects require AsyncStorage to be installed separately for event persistence.
+Bare React Native projects (created with `react-native init` or Expo bare workflow) require manual installation of AsyncStorage for event persistence.
 
 #### Installation
 
+Install the SDK and AsyncStorage dependency:
+
 ```bash
 npm install @mostly-good-metrics/react-native @react-native-async-storage/async-storage
-cd ios && pod install
 ```
 
+For iOS, install CocoaPods dependencies:
+
+```bash
+cd ios && pod install && cd ..
+```
+
+For Android, no additional steps are needed (Gradle handles dependencies automatically).
+
 #### Setup
+
+Initialize the SDK with your app version from `package.json`:
 
 ```typescript
 import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
 import { version } from './package.json';
 
 MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
-  appVersion: version, // Use your package.json version
+  appVersion: version, // e.g., "1.2.0" from package.json
+  environment: __DEV__ ? 'development' : 'production',
 });
+```
+
+#### TypeScript Configuration
+
+If you get TypeScript errors when importing from `package.json`, enable `resolveJsonModule` in your `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "resolveJsonModule": true
+  }
+}
 ```
 
 #### Without AsyncStorage (Not Recommended)
 
-The SDK will work without AsyncStorage, but with significant limitations:
-- Events are stored **in memory only** (lost on app restart)
-- User identity (`userId`, `distinctId`) is **not persisted** (new anonymous ID on each launch)
-- Install/update detection **will not work**
+The SDK will work without AsyncStorage installed, but with **significant limitations**:
 
-For production apps, **always install AsyncStorage** to ensure reliable analytics.
+| Feature | With AsyncStorage | Without AsyncStorage |
+|---------|------------------|---------------------|
+| Event persistence | ✅ Persisted to disk (survives app restarts) | ❌ Memory only (lost on restart) |
+| User identity | ✅ Persisted across sessions | ❌ New anonymous ID each launch |
+| Install/update detection | ✅ Works correctly | ❌ Broken (can't detect) |
+| Session tracking | ✅ Continuous across restarts | ❌ Resets on every restart |
+| Production readiness | ✅ Recommended | ❌ **Do not use in production** |
+
+**For production apps, always install AsyncStorage.** Without it, you'll lose critical analytics data and user identity tracking.
+
+### Comparison: Expo vs Bare React Native
+
+| Aspect | Expo | Bare React Native |
+|--------|------|-------------------|
+| **Setup complexity** | ⭐ Simple (zero dependencies) | ⭐⭐ Moderate (install AsyncStorage) |
+| **AsyncStorage** | ✅ Built-in | ❌ Manual install required |
+| **App version** | Via `expo-constants` | Via `package.json` import |
+| **Configuration** | `app.json` or code | Code only |
+| **Pod install (iOS)** | ✅ Handled by Expo | ⚠️ Required manually |
+| **Recommended for** | New projects, rapid development | Projects needing native modules |
+
+## Manual Flush
+
+Events are automatically flushed periodically and when the app backgrounds. You can also trigger a manual flush:
+
+```typescript
+MostlyGoodMetrics.flush();
+```
+
+To check pending events:
+
+```typescript
+const count = await MostlyGoodMetrics.getPendingEventCount();
+console.log(`${count} events pending`);
+```
 
 ## Debug Logging
 
