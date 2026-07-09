@@ -23,7 +23,15 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test
+        run: npm run test:coverage
+
+      - name: Upload coverage to Covallaby
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          curl -sf -X POST "https://app.covallaby.com/api/v1/upload?repo=${{ github.repository }}&branch=${{ github.ref_name }}&commit=${{ github.sha }}" \
+            -H "Authorization: Bearer ${{ secrets.COVALLABY_TOKEN }}" \
+            --data-binary @coverage/lcov.info
 
       - name: Type check
         run: npm run typescript
