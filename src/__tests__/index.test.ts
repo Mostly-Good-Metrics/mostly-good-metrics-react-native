@@ -116,6 +116,16 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       expect(configArg.osVersion).toBe('17.0');
     });
 
+    it('should wire AsyncStorage-backed experiment storage', () => {
+      MostlyGoodMetrics.configure('test-api-key');
+
+      expect(mockConfigure).toHaveBeenCalledTimes(1);
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.experimentStorage).toBeDefined();
+      expect(typeof configArg.experimentStorage.getItem).toBe('function');
+      expect(typeof configArg.experimentStorage.setItem).toBe('function');
+    });
+
     it('should disable JS SDK lifecycle tracking', () => {
       MostlyGoodMetrics.configure('test-api-key');
 
@@ -228,14 +238,24 @@ describe('MostlyGoodMetrics React Native SDK', () => {
     });
 
     describe('getVariant', () => {
-      it('should call getVariant on the JS SDK', () => {
+      it('should call getVariant on the JS SDK with a null default fallback', () => {
         mockGetVariant.mockReturnValue('variant-a');
 
         const result = MostlyGoodMetrics.getVariant('my-experiment');
 
         expect(mockGetVariant).toHaveBeenCalledTimes(1);
-        expect(mockGetVariant).toHaveBeenCalledWith('my-experiment');
+        expect(mockGetVariant).toHaveBeenCalledWith('my-experiment', null);
         expect(result).toBe('variant-a');
+      });
+
+      it('should pass the fallback through to the JS SDK', () => {
+        mockGetVariant.mockReturnValue('control');
+
+        const result = MostlyGoodMetrics.getVariant('my-experiment', 'control');
+
+        expect(mockGetVariant).toHaveBeenCalledTimes(1);
+        expect(mockGetVariant).toHaveBeenCalledWith('my-experiment', 'control');
+        expect(result).toBe('control');
       });
 
       it('should return null when experiment does not exist', () => {
@@ -243,7 +263,7 @@ describe('MostlyGoodMetrics React Native SDK', () => {
 
         const result = MostlyGoodMetrics.getVariant('nonexistent-experiment');
 
-        expect(mockGetVariant).toHaveBeenCalledWith('nonexistent-experiment');
+        expect(mockGetVariant).toHaveBeenCalledWith('nonexistent-experiment', null);
         expect(result).toBeNull();
       });
 
@@ -254,6 +274,15 @@ describe('MostlyGoodMetrics React Native SDK', () => {
 
         expect(mockGetVariant).not.toHaveBeenCalled();
         expect(result).toBeNull();
+      });
+
+      it('should return the fallback when SDK is not configured', () => {
+        MostlyGoodMetrics.destroy();
+
+        const result = MostlyGoodMetrics.getVariant('my-experiment', 'control');
+
+        expect(mockGetVariant).not.toHaveBeenCalled();
+        expect(result).toBe('control');
       });
     });
 

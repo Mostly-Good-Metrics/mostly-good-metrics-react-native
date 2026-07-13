@@ -1,4 +1,4 @@
-import type { IEventStorage, MGMEvent } from '@mostly-good-metrics/javascript';
+import type { IEventStorage, IExperimentStorage, MGMEvent } from '@mostly-good-metrics/javascript';
 
 const STORAGE_KEY = 'mostlygoodmetrics_events';
 const USER_ID_KEY = 'mostlygoodmetrics_user_id';
@@ -129,6 +129,25 @@ export class AsyncStorageEventStorage implements IEventStorage {
   async clear(): Promise<void> {
     this.events = [];
     await removeItem(STORAGE_KEY);
+  }
+}
+
+/**
+ * Experiment storage for React Native.
+ *
+ * Implements the JS SDK's `IExperimentStorage` key-value interface over
+ * AsyncStorage (with the same in-memory fallback as event storage), so the
+ * experiments variant cache and $experiment_exposure dedup flags survive app
+ * restarts. Pass an instance via the `experimentStorage` configuration option;
+ * the JS SDK awaits hydration from this adapter before `ready()` resolves.
+ */
+export class AsyncStorageExperimentStorage implements IExperimentStorage {
+  async getItem(key: string): Promise<string | null> {
+    return getItem(key);
+  }
+
+  async setItem(key: string, value: string): Promise<void> {
+    return setItem(key, value);
   }
 }
 

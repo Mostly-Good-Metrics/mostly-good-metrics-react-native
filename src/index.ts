@@ -9,14 +9,19 @@ import {
   SystemEvents,
   SystemProperties,
 } from '@mostly-good-metrics/javascript';
-import { AsyncStorageEventStorage, persistence, getStorageType } from './storage';
+import {
+  AsyncStorageEventStorage,
+  AsyncStorageExperimentStorage,
+  persistence,
+  getStorageType,
+} from './storage';
 
 /** SDK version for metrics headers */
 const SDK_VERSION = '0.3.6';
 
 export type { MGMConfiguration, EventProperties, UserProfile };
 
-export interface ReactNativeConfig extends Omit<MGMConfiguration, 'storage'> {
+export interface ReactNativeConfig extends Omit<MGMConfiguration, 'storage' | 'experimentStorage'> {
   /**
    * The app version string. Required for install/update tracking.
    */
@@ -142,12 +147,18 @@ const MostlyGoodMetrics = {
     // Create AsyncStorage-based storage
     const storage = new AsyncStorageEventStorage(config.maxStoredEvents);
 
+    // AsyncStorage-backed experiment storage: persists the experiments
+    // variant cache and exposure dedup flags across app restarts. Wired at
+    // construction so the JS SDK hydrates it before ready() resolves.
+    const experimentStorage = new AsyncStorageExperimentStorage();
+
     // Configure the JS SDK
     // Disable its built-in lifecycle tracking since we handle it ourselves
     MGMClient.configure({
       apiKey,
       ...config,
       storage,
+      experimentStorage,
       platform: Platform.OS as MGMPlatform, // 'ios' or 'android'
       sdk: 'react-native',
       sdkVersion: SDK_VERSION,
@@ -330,23 +341,34 @@ const MostlyGoodMetrics = {
 
   /**
    * Get the variant for an experiment.
-   * Returns null if the experiment doesn't exist or SDK is not ready.
-   * Call ready() first to ensure experiments are loaded.
+   *
+   * Variants are assigned server-side and cached locally via AsyncStorage
+   * (forever, per user, with stale-while-revalidate background refreshes).
+   * On a hit, the variant is set as a super property and a
+   * $experiment_exposure event is tracked once per (user, experiment,
+   * variant), with dedup persisted across app restarts.
+   *
+   * Returns `fallback` (default null) if the experiment is unknown or
+   * experiments have not loaded yet. Await ready() first to ensure
+   * experiments are loaded.
    *
    * @param experimentName The name of the experiment
-   * @returns The variant name, or null if not available
+   * @param fallback Value returned when no variant is assigned (default null)
+   * @returns The assigned variant, or `fallback` if not available
    */
-  getVariant(experimentName: string): string | null {
+  getVariant(experimentName: string, fallback: string | null = null): string | null {
     if (!state.isConfigured) {
       console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
-      return null;
+      return fallback;
     }
     log('Getting variant for experiment:', experimentName);
-    return MGMClient.getVariant(experimentName);
+    return MGMClient.getVariant(experimentName, fallback);
   },
 
   /**
-   * Wait for the SDK to be ready, including experiment data.
+   * Wait for experiments to be loaded (resolves immediately if the
+   * AsyncStorage cache is already hydrated; hydration always completes
+   * before this resolves).
    * Call this before getVariant() to ensure experiments are loaded.
    *
    * @returns A promise that resolves when the SDK is ready
