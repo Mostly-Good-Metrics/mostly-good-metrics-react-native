@@ -1,7 +1,8 @@
-import type { IEventStorage, MGMEvent } from '@mostly-good-metrics/javascript';
+import type { IEventStorage, IExperimentStorage, MGMEvent } from '@mostly-good-metrics/javascript';
 
 const STORAGE_KEY = 'mostlygoodmetrics_events';
 const USER_ID_KEY = 'mostlygoodmetrics_user_id';
+const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
 const APP_VERSION_KEY = 'mostlygoodmetrics_app_version';
 const FIRST_LAUNCH_KEY = 'mostlygoodmetrics_installed';
 
@@ -133,6 +134,25 @@ export class AsyncStorageEventStorage implements IEventStorage {
 }
 
 /**
+ * Experiment storage for React Native.
+ *
+ * Implements the JS SDK's `IExperimentStorage` key-value interface over
+ * AsyncStorage (with the same in-memory fallback as event storage), so the
+ * experiments variant cache and $experiment_exposure dedup flags survive app
+ * restarts. Pass an instance via the `experimentStorage` configuration option;
+ * the JS SDK awaits hydration from this adapter before `ready()` resolves.
+ */
+export class AsyncStorageExperimentStorage implements IExperimentStorage {
+  async getItem(key: string): Promise<string | null> {
+    return getItem(key);
+  }
+
+  async setItem(key: string, value: string): Promise<void> {
+    return setItem(key, value);
+  }
+}
+
+/**
  * Persistence helpers for user ID and app version.
  */
 export const persistence = {
@@ -146,6 +166,38 @@ export const persistence = {
     } else {
       await removeItem(USER_ID_KEY);
     }
+  },
+
+  /**
+   * Resolve the anonymous ID used for all pre-identify tracking and
+   * server-side experiment bucketing.
+   *
+   * The JS SDK persists its anonymous ID via cookies/localStorage, neither of
+   * which exists on React Native, so the wrapper persists one in AsyncStorage
+   * and passes it to the JS SDK via the `anonymousId` configuration override.
+   *
+   * Mirrors the JS SDK's own resolution semantics: an explicit override
+   * always wins (and is persisted), otherwise the stored ID is reused,
+   * otherwise a new one is generated and persisted - keeping the ID stable
+   * across app launches.
+   */
+  async getOrCreateAnonymousId(
+    override: string | undefined,
+    generate: () => string
+  ): Promise<string> {
+    if (override) {
+      await setItem(ANONYMOUS_ID_KEY, override);
+      return override;
+    }
+
+    const existing = await getItem(ANONYMOUS_ID_KEY);
+    if (existing) {
+      return existing;
+    }
+
+    const newId = generate();
+    await setItem(ANONYMOUS_ID_KEY, newId);
+    return newId;
   },
 
   async getAppVersion(): Promise<string | null> {

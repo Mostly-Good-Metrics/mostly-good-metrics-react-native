@@ -15,6 +15,7 @@ A lightweight React Native SDK for tracking analytics events with [MostlyGoodMet
 - [Event Naming](#event-naming)
 - [Properties](#properties)
 - [Manual Flush](#manual-flush)
+- [A/B Testing (Experiments)](#ab-testing-experiments)
 - [Automatic Behavior](#automatic-behavior)
 - [Debug Logging](#debug-logging)
 - [Framework Integration](#framework-integration)
@@ -296,6 +297,33 @@ To check pending events:
 const count = await MostlyGoodMetrics.getPendingEventCount();
 console.log(`${count} events pending`);
 ```
+
+## A/B Testing (Experiments)
+
+Variants are assigned server-side so the same user always gets the same variant for the same experiment.
+
+```typescript
+// Wait for experiments to load (resolves immediately if the
+// AsyncStorage cache is already hydrated)
+await MostlyGoodMetrics.ready();
+
+// Get the assigned variant, with an optional fallback for when the
+// experiment is unknown or experiments haven't loaded yet (default: null)
+const variant = MostlyGoodMetrics.getVariant('checkout-flow', 'control');
+
+if (variant === 'treatment') {
+  // show the new checkout
+}
+```
+
+Behavior (provided by the underlying JavaScript SDK):
+
+- **Caching (stale-while-revalidate, no TTL)**: assigned variants are cached per user in AsyncStorage and never expire. Cache hydration completes before `ready()` resolves, and a background refetch keeps assignments up to date, throttled to at most once per hour.
+- **Exposure tracking**: on the first `getVariant()` hit per (user, experiment, variant), a `$experiment_exposure` event is tracked with `{ experiment, variant }`. Dedup flags are persisted in AsyncStorage, so exposures are not re-tracked across app restarts.
+- **Super property**: the variant is stored as `$experiment_{name}` (snake_cased) and attached to all subsequent events.
+- **Identify**: after `identify()` with a new user ID, variants are refetched (passing `anonymous_id` alongside `user_id` so the server can alias pre-identify assignments) and swapped in atomically.
+
+The SDK wires an AsyncStorage-backed experiment storage adapter automatically - no extra setup is needed.
 
 ## Automatic Behavior
 
@@ -614,6 +642,7 @@ The example app includes:
 - Automatic lifecycle event tracking
 - Manual flush trigger
 - Pending event count display
+- A/B testing: awaiting `ready()` and reading a variant with `getVariant(name, fallback)`
 - Debug logging output
 
 Check the Metro bundler console to see the SDK's debug output as you interact with the app.

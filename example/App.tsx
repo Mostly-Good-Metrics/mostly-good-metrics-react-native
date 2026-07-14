@@ -5,6 +5,7 @@ import MostlyGoodMetrics from '@mostly-good-metrics/react-native';
 
 export default function App() {
   const [eventCount, setEventCount] = useState(0);
+  const [variant, setVariant] = useState<string | null>(null);
 
   useEffect(() => {
     // Initialize the SDK
@@ -15,6 +16,12 @@ export default function App() {
 
     // Identify a test user
     MostlyGoodMetrics.identify('test-user-123');
+
+    // A/B testing: wait for experiments (cache hydration or first fetch),
+    // then read the assigned variant with a fallback.
+    MostlyGoodMetrics.ready().then(() => {
+      setVariant(MostlyGoodMetrics.getVariant('example-experiment', 'control'));
+    });
   }, []);
 
   const trackEvent = () => {
@@ -82,6 +89,9 @@ export default function App() {
     <View style={styles.container}>
       <Text style={styles.title}>MostlyGoodMetrics</Text>
       <Text style={styles.subtitle}>React Native Example</Text>
+      <Text style={styles.subtitle}>
+        example-experiment variant: {variant ?? 'loading...'}
+      </Text>
 
       <View style={styles.buttonContainer}>
         <Pressable style={styles.button} onPress={trackEvent}>

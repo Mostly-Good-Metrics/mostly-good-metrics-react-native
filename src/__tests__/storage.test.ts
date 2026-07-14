@@ -9,7 +9,12 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   default: mockAsyncStorage,
 }));
 
-import { AsyncStorageEventStorage, persistence, getStorageType } from '../storage';
+import {
+  AsyncStorageEventStorage,
+  AsyncStorageExperimentStorage,
+  persistence,
+  getStorageType,
+} from '../storage';
 
 describe('getStorageType', () => {
   it('returns persistent when AsyncStorage is available', () => {
@@ -141,6 +146,53 @@ describe('AsyncStorageEventStorage', () => {
 
       expect(mockAsyncStorage.removeItem).toHaveBeenCalledWith('mostlygoodmetrics_events');
     });
+  });
+});
+
+describe('AsyncStorageExperimentStorage', () => {
+  let storage: AsyncStorageExperimentStorage;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockAsyncStorage.getItem.mockResolvedValue(null);
+    mockAsyncStorage.setItem.mockResolvedValue(undefined);
+    storage = new AsyncStorageExperimentStorage();
+  });
+
+  it('writes values through to AsyncStorage', async () => {
+    await storage.setItem('mgm_experiment_variants', '{"userId":"u1"}');
+
+    expect(mockAsyncStorage.setItem).toHaveBeenCalledWith(
+      'mgm_experiment_variants',
+      '{"userId":"u1"}'
+    );
+  });
+
+  it('reads values from AsyncStorage', async () => {
+    mockAsyncStorage.getItem.mockResolvedValueOnce('{"userId":"u1"}');
+
+    const value = await storage.getItem('mgm_experiment_variants');
+
+    expect(mockAsyncStorage.getItem).toHaveBeenCalledWith('mgm_experiment_variants');
+    expect(value).toBe('{"userId":"u1"}');
+  });
+
+  it('round-trips a value', async () => {
+    const backing = new Map<string, string>();
+    mockAsyncStorage.setItem.mockImplementation(async (key: string, value: string) => {
+      backing.set(key, value);
+    });
+    mockAsyncStorage.getItem.mockImplementation(async (key: string) => backing.get(key) ?? null);
+
+    await storage.setItem('mgm_experiment_exposures', '["u1::exp::a"]');
+
+    expect(await storage.getItem('mgm_experiment_exposures')).toBe('["u1::exp::a"]');
+  });
+
+  it('returns null for missing keys', async () => {
+    mockAsyncStorage.getItem.mockResolvedValueOnce(null);
+
+    expect(await storage.getItem('missing-key')).toBeNull();
   });
 });
 
