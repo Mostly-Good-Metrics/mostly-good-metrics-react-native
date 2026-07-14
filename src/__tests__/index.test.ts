@@ -31,6 +31,7 @@ const mockGetSuperProperties = jest.fn().mockReturnValue({});
 const mockGetVariant = jest.fn().mockReturnValue(null);
 const mockReady = jest.fn().mockResolvedValue(undefined);
 const mockIsConfigured = false;
+const mockGenerateAnonymousId = jest.fn(() => '$anon_mockmockmock');
 
 jest.mock('@mostly-good-metrics/javascript', () => ({
   MostlyGoodMetrics: {
@@ -53,6 +54,7 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
     getVariant: mockGetVariant,
     ready: mockReady,
   },
+  generateAnonymousId: mockGenerateAnonymousId,
   SystemEvents: {
     APP_INSTALLED: '$app_installed',
     APP_UPDATED: '$app_updated',
@@ -71,9 +73,20 @@ jest.mock('@mostly-good-metrics/javascript', () => ({
 // Import after mocks are set up
 import MostlyGoodMetrics from '../index';
 
+const USER_ID_KEY = 'mostlygoodmetrics_user_id';
+const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
+
+// configure() resolves the persisted anonymous ID and stored user ID from
+// AsyncStorage before constructing the JS client, so tests must let those
+// microtasks settle before asserting on the JS client mocks.
+const flushInit = () => new Promise((resolve) => setImmediate(resolve));
+
+const mockAsyncStorage = jest.requireMock('@react-native-async-storage/async-storage').default;
+
 describe('MostlyGoodMetrics React Native SDK', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockAsyncStorage.getItem.mockResolvedValue(null);
     // Reset the SDK state
     MostlyGoodMetrics.destroy();
   });
@@ -81,43 +94,106 @@ describe('MostlyGoodMetrics React Native SDK', () => {
   describe('configure', () => {
     it('should restore user ID from storage', async () => {
       const mockIdentify = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics.identify;
-      const mockAsyncStorage = jest.requireMock('@react-native-async-storage/async-storage').default;
-      mockAsyncStorage.getItem.mockResolvedValueOnce('user-123');
+      mockAsyncStorage.getItem.mockImplementation((key: string) =>
+        Promise.resolve(key === USER_ID_KEY ? 'user-123' : null)
+      );
 
       MostlyGoodMetrics.configure('test-api-key');
 
-      await new Promise((resolve) => setImmediate(resolve));
+      await flushInit();
 
       expect(mockIdentify).toHaveBeenCalledTimes(1);
       expect(mockIdentify).toHaveBeenCalledWith('user-123');
     });
 
-    it('should pass platform as ios when Platform.OS is ios', () => {
+    it('should generate, persist and pass a stable anonymous ID when none is stored', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+
+      await flushInit();
+
+      expect(mockGenerateAnonymousId).toHaveBeenCalledTimes(1);
+      expect(mockConfigure).toHaveBeenCalledTimes(1);
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.anonymousId).toBe('$anon_mockmockmock');
+      expect(mockAsyncStorage.setItem).toHaveBeenCalledWith(ANONYMOUS_ID_KEY, '$anon_mockmockmock');
+    });
+
+    it('should reuse the persisted anonymous ID on subsequent launches', async () => {
+      mockAsyncStorage.getItem.mockImplementation((key: string) =>
+        Promise.resolve(key === ANONYMOUS_ID_KEY ? '$anon_persisted12' : null)
+      );
+
+      MostlyGoodMetrics.configure('test-api-key');
+
+      await flushInit();
+
+      expect(mockGenerateAnonymousId).not.toHaveBeenCalled();
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.anonymousId).toBe('$anon_persisted12');
+    });
+
+    it('should honor and persist an explicit anonymousId override', async () => {
+      mockAsyncStorage.getItem.mockImplementation((key: string) =>
+        Promise.resolve(key === ANONYMOUS_ID_KEY ? '$anon_persisted12' : null)
+      );
+
+      MostlyGoodMetrics.configure('test-api-key', { anonymousId: 'device-abc' });
+
+      await flushInit();
+
+      expect(mockGenerateAnonymousId).not.toHaveBeenCalled();
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.anonymousId).toBe('device-abc');
+      expect(mockAsyncStorage.setItem).toHaveBeenCalledWith(ANONYMOUS_ID_KEY, 'device-abc');
+    });
+
+    it('should queue calls made before the JS client is constructed', async () => {
+      MostlyGoodMetrics.configure('test-api-key');
+      MostlyGoodMetrics.track('early_event');
+
+      expect(mockTrack).not.toHaveBeenCalled();
+
+      await flushInit();
+
+      expect(mockConfigure).toHaveBeenCalledTimes(1);
+      expect(mockTrack).toHaveBeenCalledTimes(2); // early_event + $app_opened
+      expect(mockTrack.mock.calls[0][0]).toBe('early_event');
+    });
+
+    it('should pass platform as ios when Platform.OS is ios', async () => {
+      MostlyGoodMetrics.configure('test-api-key');
+
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.platform).toBe('ios');
     });
 
-    it('should pass sdk as react-native', () => {
+    it('should pass sdk as react-native', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.sdk).toBe('react-native');
     });
 
-    it('should pass osVersion from Platform.Version', () => {
+    it('should pass osVersion from Platform.Version', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.osVersion).toBe('17.0');
     });
 
-    it('should wire AsyncStorage-backed experiment storage', () => {
+    it('should wire AsyncStorage-backed experiment storage', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
@@ -126,8 +202,10 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       expect(typeof configArg.experimentStorage.setItem).toBe('function');
     });
 
-    it('should disable JS SDK lifecycle tracking', () => {
+    it('should disable JS SDK lifecycle tracking', async () => {
       MostlyGoodMetrics.configure('test-api-key');
+
+      await flushInit();
 
       expect(mockConfigure).toHaveBeenCalledTimes(1);
       const configArg = mockConfigure.mock.calls[0][0];
@@ -136,8 +214,9 @@ describe('MostlyGoodMetrics React Native SDK', () => {
   });
 
   describe('super properties', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
       jest.clearAllMocks();
     });
 
@@ -190,8 +269,9 @@ describe('MostlyGoodMetrics React Native SDK', () => {
     // Get reference to the mock identify function
     const mockIdentify = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics.identify;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
       jest.clearAllMocks();
     });
 
@@ -232,8 +312,9 @@ describe('MostlyGoodMetrics React Native SDK', () => {
   });
 
   describe('A/B testing', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
       jest.clearAllMocks();
     });
 

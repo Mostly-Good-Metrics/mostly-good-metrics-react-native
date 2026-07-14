@@ -8,6 +8,7 @@ import {
   type UserProfile,
   SystemEvents,
   SystemProperties,
+  generateAnonymousId,
 } from '@mostly-good-metrics/javascript';
 import {
   AsyncStorageEventStorage,
@@ -36,6 +37,9 @@ const g = globalThis as typeof globalThis & {
     currentAppState: AppStateStatus;
     debugLogging: boolean;
     lastLifecycleEvent: { name: string; time: number } | null;
+    clientReady: boolean;
+    pendingClientCalls: Array<() => void>;
+    initPromise: Promise<void> | null;
   };
 };
 
@@ -47,10 +51,18 @@ if (!g.__MGM_RN_STATE__) {
     currentAppState: AppState.currentState,
     debugLogging: false,
     lastLifecycleEvent: null,
+    clientReady: false,
+    pendingClientCalls: [],
+    initPromise: null,
   };
 }
 
 const state = g.__MGM_RN_STATE__;
+
+// Backfill fields that may be missing when hot-reloading over an older SDK version
+state.clientReady = state.clientReady ?? false;
+state.pendingClientCalls = state.pendingClientCalls ?? [];
+state.initPromise = state.initPromise ?? null;
 
 const DEDUPE_INTERVAL_MS = 1000; // Ignore duplicate events within 1 second
 
@@ -58,6 +70,23 @@ function log(...args: unknown[]) {
   if (state.debugLogging) {
     console.log('[MostlyGoodMetrics]', ...args);
   }
+}
+
+/**
+ * Run a JS-client call now if the client has been constructed, otherwise
+ * queue it to run (in order) as soon as configuration finishes.
+ *
+ * configure() resolves the persisted anonymous ID and stored user ID from
+ * AsyncStorage before constructing the JS client, so there is a short async
+ * window where the wrapper is "configured" but the JS client does not exist
+ * yet. Calls made in that window would otherwise be dropped silently.
+ */
+function whenClientReady(fn: () => void): void {
+  if (state.clientReady) {
+    fn();
+    return;
+  }
+  state.pendingClientCalls.push(fn);
 }
 
 /**
@@ -133,6 +162,12 @@ async function trackInstallOrUpdate(appVersion?: string) {
 const MostlyGoodMetrics = {
   /**
    * Configure the SDK with an API key and optional settings.
+   *
+   * Identity is resolved before the JS client is constructed: the persisted
+   * anonymous ID (generated once and stored in AsyncStorage) and any stored
+   * user ID are loaded first, so the client's very first experiments fetch
+   * runs with a stable identity. Calls made while that async resolution is
+   * in flight are queued and replayed in order.
    */
   configure(apiKey: string, config: Omit<ReactNativeConfig, 'apiKey'> = {}): void {
     // Check both our state and the underlying JS SDK
@@ -144,6 +179,9 @@ const MostlyGoodMetrics = {
     state.debugLogging = config.enableDebugLogging ?? false;
     log('Configuring with options:', config);
 
+    state.isConfigured = true;
+    state.clientReady = false;
+
     // Create AsyncStorage-based storage
     const storage = new AsyncStorageEventStorage(config.maxStoredEvents);
 
@@ -152,49 +190,70 @@ const MostlyGoodMetrics = {
     // construction so the JS SDK hydrates it before ready() resolves.
     const experimentStorage = new AsyncStorageExperimentStorage();
 
-    // Configure the JS SDK
-    // Disable its built-in lifecycle tracking since we handle it ourselves
-    MGMClient.configure({
-      apiKey,
-      ...config,
-      storage,
-      experimentStorage,
-      platform: Platform.OS as MGMPlatform, // 'ios' or 'android'
-      sdk: 'react-native',
-      sdkVersion: SDK_VERSION,
-      osVersion: getOSVersion(),
-      trackAppLifecycleEvents: false, // We handle this with AppState
-    });
+    state.initPromise = (async () => {
+      // Resolve identity BEFORE constructing the JS client. The JS SDK
+      // persists its anonymous ID via cookies/localStorage, which do not
+      // exist on React Native - without an override it would generate a
+      // fresh $anon_* ID every launch (re-bucketing users, re-firing
+      // exposures and invalidating the variants cache). Loading both the
+      // persisted anonymous ID and the stored user ID first guarantees the
+      // client's initial experiments fetch uses a stable identity.
+      const [anonymousId, storedUserId] = await Promise.all([
+        persistence.getOrCreateAnonymousId(config.anonymousId, generateAnonymousId),
+        persistence.getUserId(),
+      ]);
+      log('Resolved anonymous ID:', anonymousId);
 
-    state.isConfigured = true;
+      // Configure the JS SDK
+      // Disable its built-in lifecycle tracking since we handle it ourselves
+      MGMClient.configure({
+        apiKey,
+        ...config,
+        anonymousId,
+        storage,
+        experimentStorage,
+        platform: Platform.OS as MGMPlatform, // 'ios' or 'android'
+        sdk: 'react-native',
+        sdkVersion: SDK_VERSION,
+        osVersion: getOSVersion(),
+        trackAppLifecycleEvents: false, // We handle this with AppState
+      });
 
-    // Restore user ID from storage after configuration
-    persistence.getUserId().then((userId) => {
-      if (userId) {
-        log('Restored user ID:', userId);
-        MGMClient.identify(userId);
+      // Restore the stored user ID synchronously after construction, before
+      // the client's async experiments initialization reaches its first
+      // fetch, so identified users never fetch experiments as anonymous.
+      if (storedUserId) {
+        log('Restored user ID:', storedUserId);
+        MGMClient.identify(storedUserId);
       }
-    });
 
-    // Set up React Native lifecycle tracking
-    if (config.trackAppLifecycleEvents !== false) {
-      log('Setting up lifecycle tracking, currentAppState:', state.currentAppState);
+      // Replay any calls queued while identity was being resolved
+      state.clientReady = true;
+      const pendingCalls = state.pendingClientCalls.splice(0);
+      pendingCalls.forEach((fn) => fn());
 
-      // Remove any existing listener (in case of hot reload)
-      if (state.appStateSubscription) {
-        state.appStateSubscription.remove();
-        state.appStateSubscription = null;
+      // Set up React Native lifecycle tracking
+      if (config.trackAppLifecycleEvents !== false) {
+        log('Setting up lifecycle tracking, currentAppState:', state.currentAppState);
+
+        // Remove any existing listener (in case of hot reload)
+        if (state.appStateSubscription) {
+          state.appStateSubscription.remove();
+          state.appStateSubscription = null;
+        }
+
+        // Track initial app open
+        trackLifecycleEvent(SystemEvents.APP_OPENED);
+
+        // Track install/update
+        trackInstallOrUpdate(config.appVersion).catch((e) => log('Install/update tracking error:', e));
+
+        // Subscribe to app state changes
+        state.appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
       }
-
-      // Track initial app open
-      trackLifecycleEvent(SystemEvents.APP_OPENED);
-
-      // Track install/update
-      trackInstallOrUpdate(config.appVersion).catch((e) => log('Install/update tracking error:', e));
-
-      // Subscribe to app state changes
-      state.appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
-    }
+    })().catch((e) => {
+      log('Configuration error:', e);
+    });
   },
 
   /**
@@ -213,7 +272,7 @@ const MostlyGoodMetrics = {
       ...properties,
     };
 
-    MGMClient.track(name, enrichedProperties);
+    whenClientReady(() => MGMClient.track(name, enrichedProperties));
   },
 
   /**
@@ -231,7 +290,7 @@ const MostlyGoodMetrics = {
     }
 
     log('Identifying user:', userId, profile ? 'with profile' : '');
-    MGMClient.identify(userId, profile);
+    whenClientReady(() => MGMClient.identify(userId, profile));
     // Also persist to AsyncStorage for restoration
     persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
   },
@@ -243,7 +302,7 @@ const MostlyGoodMetrics = {
     if (!state.isConfigured) return;
 
     log('Resetting identity');
-    MGMClient.resetIdentity();
+    whenClientReady(() => MGMClient.resetIdentity());
     persistence.setUserId(null).catch((e) => log('Failed to clear user ID:', e));
   },
 
@@ -254,7 +313,7 @@ const MostlyGoodMetrics = {
     if (!state.isConfigured) return;
 
     log('Flushing events');
-    MGMClient.flush().catch((e) => log('Flush error:', e));
+    whenClientReady(() => MGMClient.flush().catch((e) => log('Flush error:', e)));
   },
 
   /**
@@ -264,7 +323,7 @@ const MostlyGoodMetrics = {
     if (!state.isConfigured) return;
 
     log('Starting new session');
-    MGMClient.startNewSession();
+    whenClientReady(() => MGMClient.startNewSession());
   },
 
   /**
@@ -274,7 +333,7 @@ const MostlyGoodMetrics = {
     if (!state.isConfigured) return;
 
     log('Clearing pending events');
-    MGMClient.clearPendingEvents().catch((e) => log('Clear error:', e));
+    whenClientReady(() => MGMClient.clearPendingEvents().catch((e) => log('Clear error:', e)));
   },
 
   /**
@@ -282,6 +341,7 @@ const MostlyGoodMetrics = {
    */
   async getPendingEventCount(): Promise<number> {
     if (!state.isConfigured) return 0;
+    await state.initPromise;
     return MGMClient.getPendingEventCount();
   },
 
@@ -296,7 +356,7 @@ const MostlyGoodMetrics = {
       return;
     }
     log('Setting super property:', key);
-    MGMClient.setSuperProperty(key, value);
+    whenClientReady(() => MGMClient.setSuperProperty(key, value));
   },
 
   /**
@@ -308,7 +368,7 @@ const MostlyGoodMetrics = {
       return;
     }
     log('Setting super properties:', Object.keys(properties).join(', '));
-    MGMClient.setSuperProperties(properties);
+    whenClientReady(() => MGMClient.setSuperProperties(properties));
   },
 
   /**
@@ -317,7 +377,7 @@ const MostlyGoodMetrics = {
   removeSuperProperty(key: string): void {
     if (!state.isConfigured) return;
     log('Removing super property:', key);
-    MGMClient.removeSuperProperty(key);
+    whenClientReady(() => MGMClient.removeSuperProperty(key));
   },
 
   /**
@@ -326,7 +386,7 @@ const MostlyGoodMetrics = {
   clearSuperProperties(): void {
     if (!state.isConfigured) return;
     log('Clearing all super properties');
-    MGMClient.clearSuperProperties();
+    whenClientReady(() => MGMClient.clearSuperProperties());
   },
 
   /**
@@ -379,6 +439,9 @@ const MostlyGoodMetrics = {
       return;
     }
     log('Waiting for SDK to be ready');
+    // Wait for identity resolution + JS client construction first, so
+    // ready() never resolves before the client even exists.
+    await state.initPromise;
     return MGMClient.ready();
   },
 
@@ -393,6 +456,9 @@ const MostlyGoodMetrics = {
     MGMClient.reset();
     state.isConfigured = false;
     state.lastLifecycleEvent = null;
+    state.clientReady = false;
+    state.pendingClientCalls = [];
+    state.initPromise = null;
     log('Destroyed');
   },
 };
