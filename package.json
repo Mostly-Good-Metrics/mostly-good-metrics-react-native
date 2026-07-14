@@ -19,7 +19,7 @@
     "test:coverage": "jest --coverage",
     "typescript": "tsc --noEmit",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
-    "prepare": "node ./scripts/prepare-js-sdk.js && bob build",
+    "prepare": "bob build",
     "clean": "del-cli lib"
   },
   "keywords": [
@@ -43,9 +43,8 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
-  "//": "TODO(release): flip @mostly-good-metrics/javascript back to the released ^0.8.0 before merge/publish. The git ref is temporary while the experiments contract (mostly-good-metrics-js PR #45) is unreleased; the release train handles the flip.",
   "dependencies": {
-    "@mostly-good-metrics/javascript": "github:Mostly-Good-Metrics/mostly-good-metrics-js#josh/mgm-31-experiments-contract"
+    "@mostly-good-metrics/javascript": "^0.8.0"
   },
   "devDependencies": {
     "@react-native-async-storage/async-storage": "^1.21.0",
