@@ -6,6 +6,9 @@ const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
 const APP_VERSION_KEY = 'mostlygoodmetrics_app_version';
 const FIRST_LAUNCH_KEY = 'mostlygoodmetrics_installed';
 const OPT_OUT_KEY = 'mostlygoodmetrics_opt_out';
+// Sticky on-device experiment assignments written by the JS core (local
+// enrollment mode) through the AsyncStorage experiment storage adapter
+const LOCAL_ASSIGNMENTS_KEY = 'mgm_local_experiment_assignments';
 
 // Try to import AsyncStorage, fall back to null if not available
 let AsyncStorage: typeof import('@react-native-async-storage/async-storage').default | null = null;
@@ -207,6 +210,16 @@ export const persistence = {
    */
   async setAnonymousId(anonymousId: string): Promise<void> {
     await setItem(ANONYMOUS_ID_KEY, anonymousId);
+  },
+
+  /**
+   * Clear the sticky local experiment assignments (local enrollment mode)
+   * so a rotated anonymous ID is re-bucketed. The JS core clears these too
+   * (via the experiment storage adapter); this direct clear also covers
+   * older cores that predate the wiring.
+   */
+  async clearLocalExperimentAssignments(): Promise<void> {
+    await removeItem(LOCAL_ASSIGNMENTS_KEY);
   },
 
   /**

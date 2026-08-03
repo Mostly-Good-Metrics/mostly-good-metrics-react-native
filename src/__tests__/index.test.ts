@@ -514,6 +514,14 @@ describe('MostlyGoodMetrics React Native SDK', () => {
         expect(mockAsyncStorage.setItem).toHaveBeenCalledWith(ANONYMOUS_ID_KEY, '$anon_rotated1234');
       });
 
+      it('should clear sticky local experiment assignments on rotation', async () => {
+        await MostlyGoodMetrics.resetAnonymousId();
+
+        expect(mockAsyncStorage.removeItem).toHaveBeenCalledWith(
+          'mgm_local_experiment_assignments'
+        );
+      });
+
       it('should resolve null when SDK is not configured', async () => {
         MostlyGoodMetrics.destroy();
 
@@ -550,6 +558,24 @@ describe('MostlyGoodMetrics React Native SDK', () => {
         expect(mockAsyncStorage.setItem).toHaveBeenCalledWith(ANONYMOUS_ID_KEY, '$anon_fresh5678');
         expect(mockAsyncStorage.removeItem).toHaveBeenCalledWith(USER_ID_KEY);
       });
+
+      it('should clear sticky local experiment assignments on forget-me', async () => {
+        MostlyGoodMetrics.resetIdentity({ clearAnonymousId: true });
+        await flushInit();
+
+        expect(mockAsyncStorage.removeItem).toHaveBeenCalledWith(
+          'mgm_local_experiment_assignments'
+        );
+      });
+
+      it('should keep sticky local experiment assignments on a plain resetIdentity', async () => {
+        MostlyGoodMetrics.resetIdentity();
+        await flushInit();
+
+        expect(mockAsyncStorage.removeItem).not.toHaveBeenCalledWith(
+          'mgm_local_experiment_assignments'
+        );
+      });
     });
 
     describe('collectDeviceProperties', () => {
@@ -578,6 +604,52 @@ describe('MostlyGoodMetrics React Native SDK', () => {
         expect(props.$device_type).toBeUndefined();
         expect(props.$storage_type).toBeDefined();
       });
+    });
+  });
+
+  describe('local experiment enrollment', () => {
+    it('should pass experimentMode and localExperiments through to the JS SDK', async () => {
+      const localExperiments = [
+        {
+          id: '7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71',
+          name: 'button-color',
+          variants: ['control', 'treatment'],
+        },
+      ];
+
+      MostlyGoodMetrics.configure('test-api-key', {
+        experimentMode: 'local',
+        localExperiments,
+      });
+
+      await flushInit();
+
+      expect(mockConfigure).toHaveBeenCalledTimes(1);
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.experimentMode).toBe('local');
+      expect(configArg.localExperiments).toEqual(localExperiments);
+    });
+
+    it('should not set an experiment mode by default (JS SDK defaults to server)', async () => {
+      MostlyGoodMetrics.configure('test-api-key');
+
+      await flushInit();
+
+      const configArg = mockConfigure.mock.calls[0][0];
+      expect(configArg.experimentMode).toBeUndefined();
+    });
+
+    it('should keep the AsyncStorage experiment storage wired for sticky local assignments', async () => {
+      MostlyGoodMetrics.configure('test-api-key', { experimentMode: 'local' });
+
+      await flushInit();
+
+      const configArg = mockConfigure.mock.calls[0][0];
+      // Local mode persists sticky assignments and cached configs through
+      // this adapter, so they survive app restarts
+      expect(configArg.experimentStorage).toBeDefined();
+      expect(typeof configArg.experimentStorage.getItem).toBe('function');
+      expect(typeof configArg.experimentStorage.setItem).toBe('function');
     });
   });
 });

@@ -17,6 +17,7 @@ A lightweight React Native SDK for tracking analytics events with [MostlyGoodMet
 - [Properties](#properties)
 - [Manual Flush](#manual-flush)
 - [A/B Testing (Experiments)](#ab-testing-experiments)
+- [Local Experiment Enrollment](#local-experiment-enrollment)
 - [Automatic Behavior](#automatic-behavior)
 - [Debug Logging](#debug-logging)
 - [Framework Integration](#framework-integration)
@@ -184,6 +185,8 @@ MostlyGoodMetrics.resetIdentity();
 MostlyGoodMetrics.resetIdentity({ clearAnonymousId: true });
 ```
 
+The full "forget me" also clears the sticky local experiment assignments (local enrollment mode), so the new anonymous ID is re-bucketed - `resetAnonymousId()` clears them too.
+
 ### Reduced data collection
 
 ```typescript
@@ -227,6 +230,8 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
 | `optedOutByDefault` | `false` | Start opted out until `optIn()` is called (consent-first apps) |
 | `collectDeviceProperties` | `true` | Collect `$device_type` (and device/locale context in the JS core) |
+| `experimentMode` | `'server'` | `'server'` (server-assigned variants) or `'local'` (on-device bucketing, see [Local Experiment Enrollment](#local-experiment-enrollment)) |
+| `localExperiments` | - | Inline experiment configs for local mode (zero network) |
 
 ## Automatic Events
 
@@ -380,6 +385,40 @@ Behavior (provided by the underlying JavaScript SDK):
 - **Identify**: after `identify()` with a new user ID, variants are refetched (passing `anonymous_id` alongside `user_id` so the server can alias pre-identify assignments) and swapped in atomically.
 
 The SDK wires an AsyncStorage-backed experiment storage adapter automatically - no extra setup is needed.
+
+## Local Experiment Enrollment
+
+If you prefer that **no user identifier ever leaves the device** for experiment enrollment, switch to local mode. Experiment configurations are loaded identity-free (`GET /v1/experiments/configs`, no `user_id`/`anonymous_id` on the wire) and variants are assigned on-device with deterministic hashing - identical across all MGM SDKs:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  experimentMode: 'local',
+});
+
+// Or fully offline - no experiments network request at all:
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  experimentMode: 'local',
+  localExperiments: [
+    {
+      id: '7b1e8a90-4c2d-4f6a-9e3b-2a1d5c8f0e71', // experiment UUID from the dashboard
+      name: 'button-color',
+      variants: ['control', 'treatment'],
+    },
+  ],
+});
+
+await MostlyGoodMetrics.ready();
+const variant = MostlyGoodMetrics.getVariant('button-color', 'control');
+```
+
+Details (provided by the underlying JavaScript SDK - see its README for the full algorithm):
+
+- **Algorithm**: `variant = variants[bucket % variants.length]` where `bucket` is the first 8 bytes of `SHA-256(utf8("<experiment_uuid>:<user_id>"))` as an unsigned big-endian 64-bit integer. `user_id` is the identified ID if set, otherwise the anonymous ID.
+- **Sticky**: the first resolved variant is persisted per experiment UUID in AsyncStorage and reused across restarts; `identify()` never re-buckets. Assignments are cleared by `resetAnonymousId()` and the forget-me `resetIdentity({ clearAnonymousId: true })` (see [Privacy](#privacy)).
+- **Exposure events unchanged**: `$experiment_exposure` with the raw experiment name and the existing dedup.
+- **Caveat - no cross-device consistency for anonymous users**: there is no server-side alias resolution in local mode. A user who is anonymous on one device and identified on another may see different variants until identified everywhere.
+
+> Requires the next `@mostly-good-metrics/javascript` core release at runtime; the wrapper passes the configuration through as-is.
 
 ## Automatic Behavior
 

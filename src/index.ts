@@ -29,10 +29,40 @@ export interface ResetIdentityOptions {
   /**
    * Full "forget me": in addition to clearing the user ID, also rotate the
    * anonymous ID, purge queued (unsent) events, super properties, identify
-   * debounce state and the cached experiment variants.
+   * debounce state, the cached experiment variants and the sticky local
+   * experiment assignments (so the new anonymous ID is re-bucketed).
    * @default false
    */
   clearAnonymousId?: boolean;
+}
+
+/**
+ * How experiment variants are assigned.
+ * Mirrors the JS core's ExperimentMode (declared locally until the wrapper's
+ * @mostly-good-metrics/javascript dependency is bumped to a release that
+ * exports it).
+ */
+export type ExperimentMode = 'server' | 'local';
+
+/**
+ * An experiment configuration used for local (on-device) enrollment.
+ * Mirrors the JS core's MGMExperimentConfig.
+ */
+export interface MGMExperimentConfig {
+  /**
+   * The experiment UUID (stable bucketing key, matching the dashboard).
+   */
+  id: string;
+
+  /**
+   * The human-readable experiment name passed to getVariant().
+   */
+  name: string;
+
+  /**
+   * The ordered list of variants. Order matters for bucketing.
+   */
+  variants: string[];
 }
 
 /**
@@ -65,6 +95,24 @@ export interface ReactNativeConfig
    * @default true
    */
   collectDeviceProperties?: boolean;
+
+  /**
+   * How experiment variants are assigned:
+   * - 'server' (default): the server assigns variants per user.
+   * - 'local': experiment configs are loaded without sending any user
+   *   identifier and variants are assigned on-device via deterministic
+   *   hashing. Sticky assignments are persisted in AsyncStorage (via the
+   *   wrapper's experiment storage adapter) and survive app restarts.
+   * Requires @mostly-good-metrics/javascript >= 0.9 at runtime.
+   * @default 'server'
+   */
+  experimentMode?: ExperimentMode;
+
+  /**
+   * Inline experiment configurations for experimentMode: 'local'.
+   * When provided, the SDK performs no experiments network request at all.
+   */
+  localExperiments?: MGMExperimentConfig[];
 }
 
 /**
@@ -394,8 +442,10 @@ const MostlyGoodMetrics = {
    *
    * Pass `{ clearAnonymousId: true }` for a full "forget me": additionally
    * rotates the anonymous ID (persisted to AsyncStorage), purges queued
-   * (unsent) events, super properties, identify debounce state and the cached
-   * experiment variants. Requires @mostly-good-metrics/javascript >= 0.9.
+   * (unsent) events, super properties, identify debounce state, the cached
+   * experiment variants and the sticky local experiment assignments (so the
+   * new anonymous ID is re-bucketed).
+   * Requires @mostly-good-metrics/javascript >= 0.9.
    */
   resetIdentity(options?: ResetIdentityOptions): void {
     if (!state.isConfigured) return;
@@ -413,6 +463,12 @@ const MostlyGoodMetrics = {
             .setAnonymousId(newAnonymousId)
             .catch((e) => log('Failed to persist anonymous ID:', e));
         }
+
+        // Clear sticky local experiment assignments so the new identity is
+        // re-bucketed (also covers cores that predate this wiring)
+        persistence
+          .clearLocalExperimentAssignments()
+          .catch((e) => log('Failed to clear local experiment assignments:', e));
       }
     });
     persistence.setUserId(null).catch((e) => log('Failed to clear user ID:', e));
@@ -442,6 +498,13 @@ const MostlyGoodMetrics = {
       await persistence
         .setAnonymousId(newAnonymousId)
         .catch((e) => log('Failed to persist anonymous ID:', e));
+
+      // A rotated anonymous ID must be re-bucketed - clear sticky local
+      // experiment assignments (the core clears them too; this also covers
+      // cores that predate the wiring)
+      await persistence
+        .clearLocalExperimentAssignments()
+        .catch((e) => log('Failed to clear local experiment assignments:', e));
     }
     return newAnonymousId;
   },
