@@ -5,6 +5,7 @@ const USER_ID_KEY = 'mostlygoodmetrics_user_id';
 const ANONYMOUS_ID_KEY = 'mostlygoodmetrics_anonymous_id';
 const APP_VERSION_KEY = 'mostlygoodmetrics_app_version';
 const FIRST_LAUNCH_KEY = 'mostlygoodmetrics_installed';
+const OPT_OUT_KEY = 'mostlygoodmetrics_opt_out';
 
 // Try to import AsyncStorage, fall back to null if not available
 let AsyncStorage: typeof import('@react-native-async-storage/async-storage').default | null = null;
@@ -198,6 +199,42 @@ export const persistence = {
     const newId = generate();
     await setItem(ANONYMOUS_ID_KEY, newId);
     return newId;
+  },
+
+  /**
+   * Persist the anonymous ID (used after resetAnonymousId / forget-me so the
+   * rotated ID survives app restarts).
+   */
+  async setAnonymousId(anonymousId: string): Promise<void> {
+    await setItem(ANONYMOUS_ID_KEY, anonymousId);
+  },
+
+  /**
+   * Get the persisted opt-out choice.
+   * Returns true (opted out), false (explicitly opted in), or null when the
+   * user has never made an explicit choice.
+   *
+   * The JS SDK persists its opt-out flag via cookies/localStorage, neither of
+   * which exists on React Native, so the wrapper persists it in AsyncStorage.
+   */
+  async getOptOut(): Promise<boolean | null> {
+    const stored = await getItem(OPT_OUT_KEY);
+    if (stored === 'true') {
+      return true;
+    }
+    if (stored === 'false') {
+      return false;
+    }
+    return null;
+  },
+
+  /**
+   * Persist the user's explicit opt-out choice.
+   * Both states are stored so an explicit optIn() overrides
+   * `optedOutByDefault` on later launches.
+   */
+  async setOptOut(optedOut: boolean): Promise<void> {
+    await setItem(OPT_OUT_KEY, optedOut ? 'true' : 'false');
   },
 
   async getAppVersion(): Promise<string | null> {
