@@ -22,11 +22,58 @@ const SDK_VERSION = '0.3.6';
 
 export type { MGMConfiguration, EventProperties, UserProfile };
 
+/**
+ * How experiment variants are assigned.
+ * Mirrors the JS core's ExperimentMode (declared locally until the wrapper's
+ * @mostly-good-metrics/javascript dependency is bumped to a release that
+ * exports it).
+ */
+export type ExperimentMode = 'server' | 'local';
+
+/**
+ * An experiment configuration used for local (on-device) enrollment.
+ * Mirrors the JS core's MGMExperimentConfig.
+ */
+export interface MGMExperimentConfig {
+  /**
+   * The experiment UUID (stable bucketing key, matching the dashboard).
+   */
+  id: string;
+
+  /**
+   * The human-readable experiment name passed to getVariant().
+   */
+  name: string;
+
+  /**
+   * The ordered list of variants. Order matters for bucketing.
+   */
+  variants: string[];
+}
+
 export interface ReactNativeConfig extends Omit<MGMConfiguration, 'storage' | 'experimentStorage'> {
   /**
    * The app version string. Required for install/update tracking.
    */
   appVersion?: string;
+
+  /**
+   * How experiment variants are assigned:
+   * - 'server' (default): the server assigns variants per user.
+   * - 'local': experiment configs are loaded without sending any user
+   *   identifier and variants are assigned on-device via deterministic
+   *   hashing. Sticky assignments are persisted in AsyncStorage (via the
+   *   wrapper's experiment storage adapter) and survive app restarts.
+   * Requires @mostly-good-metrics/javascript >= 0.9 at runtime.
+   * @default 'server'
+   */
+  experimentMode?: ExperimentMode;
+
+  /**
+   * Inline experiment configurations for experimentMode: 'local'.
+   * When provided, the SDK performs no experiments network request at all.
+   */
+  localExperiments?: MGMExperimentConfig[];
 }
 
 // Use global to persist state across hot reloads
