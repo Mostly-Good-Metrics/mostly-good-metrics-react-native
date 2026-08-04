@@ -207,7 +207,7 @@ For more control, pass a configuration object:
 import { version } from './package.json'; // Or use expo-constants
 
 MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
-  baseURL: 'https://mostlygoodmetrics.com',
+  baseURL: 'https://ingest.mostlygoodmetrics.com',
   environment: 'production',
   appVersion: version, // Required for install/update tracking
   maxBatchSize: 100,
@@ -220,7 +220,7 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `baseURL` | `https://mostlygoodmetrics.com` | API endpoint |
+| `baseURL` | `https://ingest.mostlygoodmetrics.com` | API endpoint |
 | `environment` | `"production"` | Environment name |
 | `appVersion` | - | App version string (required for install/update tracking) |
 | `maxBatchSize` | `100` | Events per batch (1-1000) |
@@ -288,7 +288,7 @@ Every event automatically includes the following context fields to provide rich 
 | `appBuildNumber` | App build number (if available) | `42` | Optional: Can be set via configuration |
 | `environment` | Environment name | `production`, `staging`, `development` | Configuration option (default: `production`) |
 | `sdk` | SDK identifier | `react-native` | Hardcoded |
-| `sdkVersion` | SDK version | `0.3.6` | Package version |
+| `sdkVersion` | SDK version | `0.4.0` | Package version |
 
 ### Event Metadata
 
