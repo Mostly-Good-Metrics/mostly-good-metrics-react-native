@@ -8,6 +8,7 @@ A lightweight React Native SDK for tracking analytics events with [MostlyGoodMet
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [User Identification](#user-identification)
+- [Privacy](#privacy)
 - [Configuration Options](#configuration-options)
 - [Automatic Events](#automatic-events)
 - [Automatic Properties](#automatic-properties)
@@ -143,6 +144,61 @@ This dual-ID approach enables powerful analytics:
 - **Call `resetIdentity()` on logout**: Clear the `userId` to stop associating events with the logged-out user
 - **Use stable user IDs**: Pass your internal user ID (database primary key, UUID, etc.) to `identify()` - not email addresses which can change
 
+## Privacy
+
+The SDK surfaces the privacy controls of the underlying [JavaScript core](https://github.com/Mostly-Good-Metrics/mostly-good-metrics-js), with opt-out state persisted in **AsyncStorage** so it survives app restarts (the core's cookie/localStorage persistence does not exist on React Native).
+
+### Opt-out / opt-in
+
+```typescript
+MostlyGoodMetrics.optOut();      // Stop all tracking immediately
+MostlyGoodMetrics.isOptedOut();  // => true
+MostlyGoodMetrics.optIn();       // Resume tracking
+```
+
+- `optOut()` immediately stops tracking: `track()`, `identify()`, `flush()` and automatic lifecycle events become no-ops, and queued (unsent) events are purged.
+- The choice is persisted in AsyncStorage and restored on the next launch, before any events fire.
+- An explicit `optIn()` is persisted too and overrides `optedOutByDefault` on later launches.
+
+### Consent-first apps
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  optedOutByDefault: true,
+});
+
+// Later, once the user consents:
+MostlyGoodMetrics.optIn();
+```
+
+### Resetting the anonymous ID / forget me
+
+```typescript
+// Rotate just the anonymous ID (persisted to AsyncStorage)
+const newId = await MostlyGoodMetrics.resetAnonymousId();
+
+// Standard logout: clear the user ID, keep the anonymous ID
+MostlyGoodMetrics.resetIdentity();
+
+// Full "forget me": also rotates the anonymous ID and purges queued events,
+// super properties, identify debounce state and cached experiment variants
+MostlyGoodMetrics.resetIdentity({ clearAnonymousId: true });
+```
+
+The full "forget me" also clears the sticky local experiment assignments (local enrollment mode), so the new anonymous ID is re-bucketed - `resetAnonymousId()` clears them too.
+
+### Reduced data collection
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  collectDeviceProperties: false,
+});
+```
+
+When `false`, the wrapper omits `$device_type` and the JS core omits `$device_model` and `locale`/`timezone` context. Platform, OS version and app version are still sent.
+
+> **Note:** The JS core's `respectDoNotTrack` and `persistence` options are web-only (browser Do Not Track / Global Privacy Control signals and cookie/localStorage persistence modes) and are not part of the React Native configuration.
+
 ## Configuration Options
 
 For more control, pass a configuration object:
@@ -172,6 +228,8 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `maxStoredEvents` | `10000` | Max cached events |
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
+| `optedOutByDefault` | `false` | Start opted out until `optIn()` is called (consent-first apps) |
+| `collectDeviceProperties` | `true` | Collect `$device_type` (and device/locale context in the JS core) |
 | `experimentMode` | `'server'` | `'server'` (server-assigned variants) or `'local'` (on-device bucketing, see [Local Experiment Enrollment](#local-experiment-enrollment)) |
 | `localExperiments` | - | Inline experiment configs for local mode (zero network) |
 
@@ -356,7 +414,7 @@ const variant = MostlyGoodMetrics.getVariant('button-color', 'control');
 Details (provided by the underlying JavaScript SDK - see its README for the full algorithm):
 
 - **Algorithm**: `variant = variants[bucket % variants.length]` where `bucket` is the first 8 bytes of `SHA-256(utf8("<experiment_uuid>:<user_id>"))` as an unsigned big-endian 64-bit integer. `user_id` is the identified ID if set, otherwise the anonymous ID.
-- **Sticky**: the first resolved variant is persisted per experiment UUID in AsyncStorage and reused across restarts; `identify()` never re-buckets.
+- **Sticky**: the first resolved variant is persisted per experiment UUID in AsyncStorage and reused across restarts; `identify()` never re-buckets. Assignments are cleared by `resetAnonymousId()` and the forget-me `resetIdentity({ clearAnonymousId: true })` (see [Privacy](#privacy)).
 - **Exposure events unchanged**: `$experiment_exposure` with the raw experiment name and the existing dedup.
 - **Caveat - no cross-device consistency for anonymous users**: there is no server-side alias resolution in local mode. A user who is anonymous on one device and identified on another may see different variants until identified everywhere.
 

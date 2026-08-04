@@ -23,6 +23,20 @@ const SDK_VERSION = '0.3.6';
 export type { MGMConfiguration, EventProperties, UserProfile };
 
 /**
+ * Options for resetIdentity().
+ */
+export interface ResetIdentityOptions {
+  /**
+   * Full "forget me": in addition to clearing the user ID, also rotate the
+   * anonymous ID, purge queued (unsent) events, super properties, identify
+   * debounce state, the cached experiment variants and the sticky local
+   * experiment assignments (so the new anonymous ID is re-bucketed).
+   * @default false
+   */
+  clearAnonymousId?: boolean;
+}
+
+/**
  * How experiment variants are assigned.
  * Mirrors the JS core's ExperimentMode (declared locally until the wrapper's
  * @mostly-good-metrics/javascript dependency is bumped to a release that
@@ -51,11 +65,36 @@ export interface MGMExperimentConfig {
   variants: string[];
 }
 
-export interface ReactNativeConfig extends Omit<MGMConfiguration, 'storage' | 'experimentStorage'> {
+/**
+ * Note: `respectDoNotTrack` and `persistence` from the JS SDK are web-only
+ * (browser Do Not Track signal and cookie/localStorage persistence modes) and
+ * are intentionally not part of the React Native configuration. Opt-out state
+ * is persisted in AsyncStorage instead.
+ */
+export interface ReactNativeConfig
+  extends Omit<
+    MGMConfiguration,
+    'storage' | 'experimentStorage' | 'respectDoNotTrack' | 'persistence'
+  > {
   /**
    * The app version string. Required for install/update tracking.
    */
   appVersion?: string;
+
+  /**
+   * Start opted out of tracking until optIn() is called.
+   * Useful for consent-first apps. A previously persisted opt-in/opt-out
+   * choice (from optIn()/optOut()) takes precedence over this default.
+   * @default false
+   */
+  optedOutByDefault?: boolean;
+
+  /**
+   * Collect device properties ($device_type/$device_model) and locale/timezone
+   * context. Platform, OS version and app version are still sent when false.
+   * @default true
+   */
+  collectDeviceProperties?: boolean;
 
   /**
    * How experiment variants are assigned:
@@ -76,6 +115,22 @@ export interface ReactNativeConfig extends Omit<MGMConfiguration, 'storage' | 'e
   localExperiments?: MGMExperimentConfig[];
 }
 
+/**
+ * Privacy APIs introduced in @mostly-good-metrics/javascript 0.9.
+ * Accessed through this structural type (with runtime guards) so the wrapper
+ * compiles and degrades gracefully against older core versions until the
+ * dependency is bumped.
+ */
+interface PrivacyCapableStatics {
+  optOut?: () => void;
+  optIn?: () => void;
+  isOptedOut?: () => boolean;
+  resetAnonymousId?: () => string | null;
+  resetIdentity: (options?: ResetIdentityOptions) => void;
+}
+
+const PrivacyClient = MGMClient as unknown as PrivacyCapableStatics;
+
 // Use global to persist state across hot reloads
 const g = globalThis as typeof globalThis & {
   __MGM_RN_STATE__?: {
@@ -87,6 +142,8 @@ const g = globalThis as typeof globalThis & {
     clientReady: boolean;
     pendingClientCalls: Array<() => void>;
     initPromise: Promise<void> | null;
+    optedOut: boolean;
+    collectDeviceProperties: boolean;
   };
 };
 
@@ -101,6 +158,8 @@ if (!g.__MGM_RN_STATE__) {
     clientReady: false,
     pendingClientCalls: [],
     initPromise: null,
+    optedOut: false,
+    collectDeviceProperties: true,
   };
 }
 
@@ -110,6 +169,8 @@ const state = g.__MGM_RN_STATE__;
 state.clientReady = state.clientReady ?? false;
 state.pendingClientCalls = state.pendingClientCalls ?? [];
 state.initPromise = state.initPromise ?? null;
+state.optedOut = state.optedOut ?? false;
+state.collectDeviceProperties = state.collectDeviceProperties ?? true;
 
 const DEDUPE_INTERVAL_MS = 1000; // Ignore duplicate events within 1 second
 
@@ -140,6 +201,11 @@ function whenClientReady(fn: () => void): void {
  * Track a lifecycle event with deduplication.
  */
 function trackLifecycleEvent(eventName: string, properties?: EventProperties) {
+  if (state.optedOut) {
+    log(`Tracking is opted out, skipping lifecycle event: ${eventName}`);
+    return;
+  }
+
   const now = Date.now();
 
   // Deduplicate events that fire multiple times in quick succession
@@ -228,6 +294,9 @@ const MostlyGoodMetrics = {
 
     state.isConfigured = true;
     state.clientReady = false;
+    state.collectDeviceProperties = config.collectDeviceProperties ?? true;
+    // Until the persisted choice is loaded, honor the configured default
+    state.optedOut = config.optedOutByDefault ?? false;
 
     // Create AsyncStorage-based storage
     const storage = new AsyncStorageEventStorage(config.maxStoredEvents);
@@ -245,26 +314,40 @@ const MostlyGoodMetrics = {
       // exposures and invalidating the variants cache). Loading both the
       // persisted anonymous ID and the stored user ID first guarantees the
       // client's initial experiments fetch uses a stable identity.
-      const [anonymousId, storedUserId] = await Promise.all([
+      const [anonymousId, storedUserId, storedOptOut] = await Promise.all([
         persistence.getOrCreateAnonymousId(config.anonymousId, generateAnonymousId),
         persistence.getUserId(),
+        persistence.getOptOut(),
       ]);
       log('Resolved anonymous ID:', anonymousId);
 
+      // A persisted explicit optIn()/optOut() choice (stored in AsyncStorage,
+      // since the JS SDK's cookie/localStorage persistence does not exist on
+      // React Native) takes precedence over the configured default.
+      state.optedOut = storedOptOut ?? config.optedOutByDefault ?? false;
+      if (state.optedOut) {
+        log('Tracking is disabled (opted out)');
+      }
+
       // Configure the JS SDK
-      // Disable its built-in lifecycle tracking since we handle it ourselves
+      // Disable its built-in lifecycle tracking since we handle it ourselves.
+      // `optedOutByDefault` starts the JS client in the resolved opt-out
+      // state; its own persistence is a no-op on React Native, so the wrapper
+      // owns it. The cast keeps this compiling against core typings that
+      // predate the privacy controls (@mostly-good-metrics/javascript < 0.9).
       MGMClient.configure({
         apiKey,
         ...config,
         anonymousId,
         storage,
         experimentStorage,
+        optedOutByDefault: state.optedOut,
         platform: Platform.OS as MGMPlatform, // 'ios' or 'android'
         sdk: 'react-native',
         sdkVersion: SDK_VERSION,
         osVersion: getOSVersion(),
         trackAppLifecycleEvents: false, // We handle this with AppState
-      });
+      } as MGMConfiguration);
 
       // Restore the stored user ID synchronously after construction, before
       // the client's async experiments initialization reaches its first
@@ -312,9 +395,16 @@ const MostlyGoodMetrics = {
       return;
     }
 
+    if (state.optedOut) {
+      log(`Tracking is opted out, ignoring event: ${name}`);
+      return;
+    }
+
     // Add React Native specific properties
     const enrichedProperties: EventProperties = {
-      [SystemProperties.DEVICE_TYPE]: getDeviceType(),
+      ...(state.collectDeviceProperties
+        ? { [SystemProperties.DEVICE_TYPE]: getDeviceType() }
+        : {}),
       $storage_type: getStorageType(),
       ...properties,
     };
@@ -336,6 +426,11 @@ const MostlyGoodMetrics = {
       return;
     }
 
+    if (state.optedOut) {
+      log('Tracking is opted out, ignoring identify');
+      return;
+    }
+
     log('Identifying user:', userId, profile ? 'with profile' : '');
     whenClientReady(() => MGMClient.identify(userId, profile));
     // Also persist to AsyncStorage for restoration
@@ -344,13 +439,130 @@ const MostlyGoodMetrics = {
 
   /**
    * Clear the current user identity.
+   *
+   * Pass `{ clearAnonymousId: true }` for a full "forget me": additionally
+   * rotates the anonymous ID (persisted to AsyncStorage), purges queued
+   * (unsent) events, super properties, identify debounce state, the cached
+   * experiment variants and the sticky local experiment assignments (so the
+   * new anonymous ID is re-bucketed).
+   * Requires @mostly-good-metrics/javascript >= 0.9.
    */
-  resetIdentity(): void {
+  resetIdentity(options?: ResetIdentityOptions): void {
     if (!state.isConfigured) return;
 
-    log('Resetting identity');
-    whenClientReady(() => MGMClient.resetIdentity());
+    log('Resetting identity', options ?? '');
+    whenClientReady(() => {
+      PrivacyClient.resetIdentity(options);
+
+      if (options?.clearAnonymousId) {
+        // Persist the rotated anonymous ID so it survives app restarts
+        // (the JS SDK's own persistence is a no-op on React Native)
+        const newAnonymousId = MGMClient.shared?.anonymousId;
+        if (newAnonymousId) {
+          persistence
+            .setAnonymousId(newAnonymousId)
+            .catch((e) => log('Failed to persist anonymous ID:', e));
+        }
+
+        // Clear sticky local experiment assignments so the new identity is
+        // re-bucketed (also covers cores that predate this wiring)
+        persistence
+          .clearLocalExperimentAssignments()
+          .catch((e) => log('Failed to clear local experiment assignments:', e));
+      }
+    });
     persistence.setUserId(null).catch((e) => log('Failed to clear user ID:', e));
+  },
+
+  /**
+   * Reset the anonymous ID to a newly generated one, persisted to
+   * AsyncStorage. Resolves with the new anonymous ID (or null when the SDK is
+   * not configured or the installed core does not support it yet).
+   * Requires @mostly-good-metrics/javascript >= 0.9.
+   */
+  async resetAnonymousId(): Promise<string | null> {
+    if (!state.isConfigured) return null;
+
+    await state.initPromise;
+
+    if (typeof PrivacyClient.resetAnonymousId !== 'function') {
+      console.warn(
+        '[MostlyGoodMetrics] resetAnonymousId requires a newer @mostly-good-metrics/javascript core.'
+      );
+      return null;
+    }
+
+    const newAnonymousId = PrivacyClient.resetAnonymousId();
+    if (newAnonymousId) {
+      log('Anonymous ID reset');
+      await persistence
+        .setAnonymousId(newAnonymousId)
+        .catch((e) => log('Failed to persist anonymous ID:', e));
+
+      // A rotated anonymous ID must be re-bucketed - clear sticky local
+      // experiment assignments (the core clears them too; this also covers
+      // cores that predate the wiring)
+      await persistence
+        .clearLocalExperimentAssignments()
+        .catch((e) => log('Failed to clear local experiment assignments:', e));
+    }
+    return newAnonymousId;
+  },
+
+  /**
+   * Opt out of all tracking.
+   *
+   * Immediately stops tracking (track/identify/flush become no-ops) and
+   * purges queued (unsent) events. The choice is persisted in AsyncStorage so
+   * it survives app restarts.
+   */
+  optOut(): void {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+
+    log('Opting out of tracking');
+    state.optedOut = true;
+    persistence.setOptOut(true).catch((e) => log('Failed to persist opt-out:', e));
+
+    whenClientReady(() => {
+      if (typeof PrivacyClient.optOut === 'function') {
+        PrivacyClient.optOut();
+      } else {
+        // Older core: at least purge the queued events
+        MGMClient.clearPendingEvents().catch((e) => log('Clear error:', e));
+      }
+    });
+  },
+
+  /**
+   * Opt back in to tracking. Persisted in AsyncStorage, overriding
+   * `optedOutByDefault` on later launches.
+   */
+  optIn(): void {
+    if (!state.isConfigured) {
+      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      return;
+    }
+
+    log('Opting in to tracking');
+    state.optedOut = false;
+    persistence.setOptOut(false).catch((e) => log('Failed to persist opt-in:', e));
+
+    whenClientReady(() => {
+      if (typeof PrivacyClient.optIn === 'function') {
+        PrivacyClient.optIn();
+      }
+    });
+  },
+
+  /**
+   * Check whether tracking is currently opted out.
+   */
+  isOptedOut(): boolean {
+    if (!state.isConfigured) return false;
+    return state.optedOut;
   },
 
   /**
@@ -358,6 +570,11 @@ const MostlyGoodMetrics = {
    */
   flush(): void {
     if (!state.isConfigured) return;
+
+    if (state.optedOut) {
+      log('Tracking is opted out, skipping flush');
+      return;
+    }
 
     log('Flushing events');
     whenClientReady(() => MGMClient.flush().catch((e) => log('Flush error:', e)));
@@ -506,6 +723,8 @@ const MostlyGoodMetrics = {
     state.clientReady = false;
     state.pendingClientCalls = [];
     state.initPromise = null;
+    state.optedOut = false;
+    state.collectDeviceProperties = true;
     log('Destroyed');
   },
 };
