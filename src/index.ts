@@ -695,9 +695,15 @@ const MostlyGoodMetrics = {
    * before this resolves).
    * Call this before getVariant() to ensure experiments are loaded.
    *
-   * @returns A promise that resolves when the SDK is ready
+   * Resolves as soon as experiments are ready, or after `timeoutMs`
+   * (default 5000ms) elapses - whichever comes first - so it always
+   * resolves. This mirrors the native SDKs' bounded ready() (Swift
+   * `ready(timeout: 5.0)`, Android `ready(5000L)`).
+   *
+   * @param timeoutMs Maximum time to wait in milliseconds (default 5000)
+   * @returns A promise that resolves when the SDK is ready or the timeout elapses
    */
-  async ready(): Promise<void> {
+  async ready(timeoutMs: number = 5000): Promise<void> {
     if (!state.isConfigured) {
       console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
@@ -706,7 +712,7 @@ const MostlyGoodMetrics = {
     // Wait for identity resolution + JS client construction first, so
     // ready() never resolves before the client even exists.
     await state.initPromise;
-    return MGMClient.ready();
+    return MGMClient.ready(timeoutMs);
   },
 
   /**

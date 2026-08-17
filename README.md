@@ -368,6 +368,12 @@ Variants are assigned server-side so the same user always gets the same variant 
 // AsyncStorage cache is already hydrated)
 await MostlyGoodMetrics.ready();
 
+// ready() accepts an optional timeout in milliseconds (default 5000). It
+// always resolves - as soon as experiments are ready, or when the timeout
+// elapses, whichever comes first - matching the native SDKs
+// (Swift `ready(timeout: 5.0)`, Android `ready(5000L)`).
+await MostlyGoodMetrics.ready(3000);
+
 // Get the assigned variant, with an optional fallback for when the
 // experiment is unknown or experiments haven't loaded yet (default: null)
 const variant = MostlyGoodMetrics.getVariant('checkout-flow', 'control');

@@ -384,6 +384,22 @@ describe('MostlyGoodMetrics React Native SDK', () => {
         expect(mockReady).toHaveBeenCalledTimes(1);
       });
 
+      it('should default to a 5000ms timeout when called with no argument', async () => {
+        mockReady.mockResolvedValue(undefined);
+
+        await MostlyGoodMetrics.ready();
+
+        expect(mockReady).toHaveBeenCalledWith(5000);
+      });
+
+      it('should forward an explicit timeout to the JS SDK', async () => {
+        mockReady.mockResolvedValue(undefined);
+
+        await MostlyGoodMetrics.ready(1234);
+
+        expect(mockReady).toHaveBeenCalledWith(1234);
+      });
+
       it('should resolve when SDK is ready', async () => {
         mockReady.mockResolvedValue(undefined);
 
