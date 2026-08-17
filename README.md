@@ -135,7 +135,7 @@ This dual-ID approach enables powerful analytics:
 
 1. **Track anonymous users**: Use `distinctId` to follow user behavior before they sign up
 2. **Track identified users**: Use `userId` to associate events with known accounts
-3. **Link pre/post-login behavior**: Since `distinctId` never changes, you can connect a user's anonymous activity to their identified account
+3. **Link pre/post-login behavior**: Since `distinctId` never changes, you can connect a user's anonymous activity to their identified account. On `identify()`, the `$identify` event carries the pre-identify anonymous ID as an `$anonymous_id` property so the backend can stitch anonymous events onto the now-identified user.
 4. **Handle multiple devices**: Same user on different devices gets different `distinctId` but same `userId`
 
 ### Best Practices
@@ -367,6 +367,12 @@ Variants are assigned server-side so the same user always gets the same variant 
 // Wait for experiments to load (resolves immediately if the
 // AsyncStorage cache is already hydrated)
 await MostlyGoodMetrics.ready();
+
+// ready() accepts an optional timeout in milliseconds (default 5000). It
+// always resolves - as soon as experiments are ready, or when the timeout
+// elapses, whichever comes first - matching the native SDKs
+// (Swift `ready(timeout: 5.0)`, Android `ready(5000L)`).
+await MostlyGoodMetrics.ready(3000);
 
 // Get the assigned variant, with an optional fallback for when the
 // experiment is unknown or experiments haven't loaded yet (default: null)
