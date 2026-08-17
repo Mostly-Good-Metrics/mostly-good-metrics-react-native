@@ -135,7 +135,7 @@ This dual-ID approach enables powerful analytics:
 
 1. **Track anonymous users**: Use `distinctId` to follow user behavior before they sign up
 2. **Track identified users**: Use `userId` to associate events with known accounts
-3. **Link pre/post-login behavior**: Since `distinctId` never changes, you can connect a user's anonymous activity to their identified account
+3. **Link pre/post-login behavior**: Since `distinctId` never changes, you can connect a user's anonymous activity to their identified account. On `identify()`, the `$identify` event carries the pre-identify anonymous ID as an `$anonymous_id` property so the backend can stitch anonymous events onto the now-identified user.
 4. **Handle multiple devices**: Same user on different devices gets different `distinctId` but same `userId`
 
 ### Best Practices
