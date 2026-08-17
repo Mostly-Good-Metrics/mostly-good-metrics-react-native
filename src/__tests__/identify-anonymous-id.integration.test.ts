@@ -15,15 +15,16 @@
  *   emits on the $identify event it sends to the transport.
  *
  * DEPENDENCY NOTE:
- *   Stamping `$anonymous_id` onto the $identify event is being added inside the
- *   JS core (a separate MGM-195 change). The installed core (0.8.0) does not
- *   emit it yet, so this test drives a MOCK core that implements the agreed
- *   contract (identify -> $identify event with $anonymous_id = configured
- *   anonymous id, POSTed to the transport). Once the wrapper's
- *   @mostly-good-metrics/javascript dependency is bumped to a core release that
- *   includes the change, the real-core anonymous-id integration test
- *   (anonymous-id.integration.test.ts) can be extended to assert this against
- *   the live transport and this mock-backed test can be retired.
+ *   Stamping `$anonymous_id` onto the $identify event lives in the JS core
+ *   (MGM-195). That change is on the core branch feat/identify-anonymous-id-mgm-195
+ *   and is NOT in published 0.9.0 (which was version-bumped before the stamping
+ *   commit); the installed core is 0.8.0. So a true real-core integration test
+ *   isn't yet possible. Until a core release ships the stamping, this test drives
+ *   a MOCK core that FAITHFULLY models the real contract, including the guard:
+ *   omit $anonymous_id when the anon id is empty or equals the userId. If that
+ *   guard regresses, these tests fail. Once core ships it, replace this mock with
+ *   the real core (extend anonymous-id.integration.test.ts against the live
+ *   transport) and retire this mock-backed test.
  */
 
 // Make this file a module so its top-level declarations don't collide in the
@@ -87,12 +88,17 @@ const mockCore = {
     // Mirror the core: only emit $identify when there is profile data to send.
     // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
     if (profile && (profile.email || profile.name)) {
-      const properties: Record<string, unknown> = {
-        // The MGM-195 contract: sourced from the CONFIGURED anonymous id.
-        $anonymous_id: mockCore._anonymousId,
-      };
+      const properties: Record<string, unknown> = {};
       if (profile.email) properties.email = profile.email;
       if (profile.name) properties.name = profile.name;
+
+      // Real-core guard (feat/identify-anonymous-id-mgm-195, sendIdentifyEventIfNeeded):
+      // stamp $anonymous_id from the CONFIGURED anon id, but omit when it's empty
+      // or equals the identified userId. A regression in this guard must fail here.
+      const anonymousId = mockCore._anonymousId;
+      if (anonymousId && anonymousId !== userId) {
+        properties.$anonymous_id = anonymousId;
+      }
 
       const event = { name: '$identify', user_id: userId, properties };
       void (global.fetch as unknown as (...args: unknown[]) => unknown)(
@@ -258,5 +264,38 @@ describe('MGM-195: $identify carries $anonymous_id (wrapper feeds stored anon id
     // The wrapper's contribution: the core is configured with the stored id,
     // which is exactly the id it later stamps onto $identify.
     expect(mockCore._anonymousId).toBe(preExistingAnonId);
+  });
+
+  it('omits $anonymous_id when the stored anon id equals the identified userId', async () => {
+    // Guard case: anon id === userId. $identify still sends (has profile) but
+    // must not carry a redundant $anonymous_id.
+    const collidingId = 'user-collides';
+    mockBacking.map.set(ANONYMOUS_ID_KEY, collidingId);
+
+    sdk.configure(API_KEY);
+    await sdk.ready();
+
+    sdk.identify(collidingId, { email: 'jane@example.com' });
+    await flushInit();
+
+    const identify = capturedIdentifyEvent(fetchMock);
+    expect(identify).toBeDefined();
+    expect(identify?.properties.email).toBe('jane@example.com');
+    expect(identify?.properties).not.toHaveProperty('$anonymous_id');
+  });
+
+  it('omits $anonymous_id when the configured anon id is empty (core contract)', () => {
+    // The wrapper always resolves a non-empty anon id, so exercise the empty
+    // branch of the guard directly against the modeled core contract.
+    fetchMock.mockClear();
+    mockCore.reset();
+    mockCore.configure({ apiKey: API_KEY, anonymousId: '' });
+
+    mockCore.identify('user-abc', { email: 'jane@example.com' });
+
+    const identify = capturedIdentifyEvent(fetchMock);
+    expect(identify).toBeDefined();
+    expect(identify?.properties.email).toBe('jane@example.com');
+    expect(identify?.properties).not.toHaveProperty('$anonymous_id');
   });
 });
