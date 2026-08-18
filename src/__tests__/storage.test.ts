@@ -82,6 +82,46 @@ describe('AsyncStorageEventStorage', () => {
       expect(savedData[0].name).toBe('event1'); // event0 was trimmed
       expect(savedData[99].name).toBe('event_new');
     });
+
+    it('does not clobber events fired in a synchronous burst before the cache is warm', async () => {
+      // Real backing store so concurrent reads observe prior writes. getItem
+      // resolves on the SAME microtask (no setTimeout). This is essential: a
+      // setTimeout(…, 0) macrotask delay drains microtasks between each store,
+      // so each read-modify-write completes before the next begins — that
+      // SERIALIZES the burst and hides the bug (it passes even on the unfixed,
+      // unserialized storage). In-microtask resolution lets the synchronous
+      // burst genuinely race the read-modify-write window that a naive
+      // implementation loses events through.
+      const backing = new Map<string, string>();
+      mockAsyncStorage.getItem.mockImplementation(
+        async (key: string) => backing.get(key) ?? null
+      );
+      mockAsyncStorage.setItem.mockImplementation(async (key: string, value: string) => {
+        backing.set(key, value);
+      });
+
+      const burstStorage = new AsyncStorageEventStorage();
+      const mk = (n: string) => ({
+        name: n,
+        client_event_id: n,
+        timestamp: '2024-01-01T00:00:00Z',
+        user_id: '$anon_test123456',
+        platform: 'ios' as const,
+        environment: 'test',
+      });
+
+      // Fire the whole burst before awaiting any of them - none has had a
+      // chance to populate the in-memory cache yet.
+      await Promise.all([
+        burstStorage.store(mk('a')),
+        burstStorage.store(mk('b')),
+        burstStorage.store(mk('c')),
+      ]);
+
+      expect(await burstStorage.eventCount()).toBe(3);
+      const saved = JSON.parse(backing.get('mostlygoodmetrics_events')!);
+      expect(saved.map((e: { name: string }) => e.name)).toEqual(['a', 'b', 'c']);
+    });
   });
 
   describe('fetchEvents', () => {

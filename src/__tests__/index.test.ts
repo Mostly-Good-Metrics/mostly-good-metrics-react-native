@@ -319,6 +319,75 @@ describe('MostlyGoodMetrics React Native SDK', () => {
     });
   });
 
+  describe('flush', () => {
+    const mockCore = jest.requireMock('@mostly-good-metrics/javascript').MostlyGoodMetrics;
+
+    beforeEach(async () => {
+      MostlyGoodMetrics.configure('test-api-key');
+      await flushInit();
+      jest.clearAllMocks();
+    });
+
+    it('resolves only after the core flush (network POST) completes', async () => {
+      // Gate the core flush so we can observe that the wrapper's flush()
+      // promise stays pending until the underlying POST finishes.
+      let posted = false;
+      let releasePost!: () => void;
+      const postGate = new Promise<void>((resolve) => {
+        releasePost = resolve;
+      });
+      mockCore.flush.mockImplementationOnce(async () => {
+        await postGate;
+        posted = true;
+      });
+
+      const flushPromise = MostlyGoodMetrics.flush();
+
+      // Let flush() reach the awaited core flush; it should now be in flight
+      // but not resolved, because the POST has not completed yet.
+      await flushInit();
+      expect(mockCore.flush).toHaveBeenCalledTimes(1);
+      expect(posted).toBe(false);
+
+      // The wrapper's flush() promise MUST stay pending while the POST gate is
+      // closed. Racing it against a short timer is what actually distinguishes
+      // an awaitable Promise<void> from the old fire-and-forget flush(): void:
+      // that version returned `undefined`, and Promise.resolve(undefined)
+      // settles immediately, so 'flush-settled' would win the race here. With
+      // the awaitable flush(), the timer must win because delivery is gated.
+      const TIMED_OUT = Symbol('timed-out');
+      const raced = await Promise.race([
+        Promise.resolve(flushPromise).then(() => 'flush-settled' as const),
+        new Promise<typeof TIMED_OUT>((resolve) => setTimeout(() => resolve(TIMED_OUT), 50)),
+      ]);
+      expect(raced).toBe(TIMED_OUT);
+      expect(posted).toBe(false);
+
+      // Complete the network POST; only now should flush() resolve.
+      releasePost();
+      await flushPromise;
+
+      expect(posted).toBe(true);
+      // No events remain pending once the flush has been delivered.
+      mockCore.getPendingEventCount.mockResolvedValueOnce(0);
+      expect(await MostlyGoodMetrics.getPendingEventCount()).toBe(0);
+    });
+
+    it('is awaitable and a no-op (never touches the core) when opted out', async () => {
+      MostlyGoodMetrics.optOut();
+
+      await expect(MostlyGoodMetrics.flush()).resolves.toBeUndefined();
+      expect(mockCore.flush).not.toHaveBeenCalled();
+    });
+
+    it('resolves without touching the core when not configured', async () => {
+      MostlyGoodMetrics.destroy();
+
+      await expect(MostlyGoodMetrics.flush()).resolves.toBeUndefined();
+      expect(mockCore.flush).not.toHaveBeenCalled();
+    });
+  });
+
   describe('A/B testing', () => {
     beforeEach(async () => {
       MostlyGoodMetrics.configure('test-api-key');
