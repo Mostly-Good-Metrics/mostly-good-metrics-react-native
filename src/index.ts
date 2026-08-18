@@ -567,8 +567,13 @@ const MostlyGoodMetrics = {
 
   /**
    * Manually flush pending events to the server.
+   *
+   * Returns a promise that resolves once the underlying network POST
+   * completes, so callers can `await flush()` before backgrounding or exiting
+   * and be sure the batch was delivered. Resolves immediately (no-op) when the
+   * SDK is not configured or tracking is opted out.
    */
-  flush(): void {
+  async flush(): Promise<void> {
     if (!state.isConfigured) return;
 
     if (state.optedOut) {
@@ -577,7 +582,11 @@ const MostlyGoodMetrics = {
     }
 
     log('Flushing events');
-    whenClientReady(() => MGMClient.flush().catch((e) => log('Flush error:', e)));
+    // Wait for identity resolution + JS client construction (and any calls
+    // queued during that window) to finish, then await the core flush so the
+    // returned promise only resolves after the events have been sent.
+    await state.initPromise;
+    await MGMClient.flush();
   },
 
   /**
