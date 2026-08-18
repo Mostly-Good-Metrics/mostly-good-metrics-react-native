@@ -349,6 +349,20 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       expect(mockCore.flush).toHaveBeenCalledTimes(1);
       expect(posted).toBe(false);
 
+      // The wrapper's flush() promise MUST stay pending while the POST gate is
+      // closed. Racing it against a short timer is what actually distinguishes
+      // an awaitable Promise<void> from the old fire-and-forget flush(): void:
+      // that version returned `undefined`, and Promise.resolve(undefined)
+      // settles immediately, so 'flush-settled' would win the race here. With
+      // the awaitable flush(), the timer must win because delivery is gated.
+      const TIMED_OUT = Symbol('timed-out');
+      const raced = await Promise.race([
+        Promise.resolve(flushPromise).then(() => 'flush-settled' as const),
+        new Promise<typeof TIMED_OUT>((resolve) => setTimeout(() => resolve(TIMED_OUT), 50)),
+      ]);
+      expect(raced).toBe(TIMED_OUT);
+      expect(posted).toBe(false);
+
       // Complete the network POST; only now should flush() resolve.
       releasePost();
       await flushPromise;

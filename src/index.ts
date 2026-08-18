@@ -585,8 +585,16 @@ const MostlyGoodMetrics = {
     // Wait for identity resolution + JS client construction (and any calls
     // queued during that window) to finish, then await the core flush so the
     // returned promise only resolves after the events have been sent.
+    //
+    // The .catch is load-bearing: flush() must be safe both awaited AND
+    // fire-and-forget. A bare `flush()` (no await) on a rejecting core flush
+    // (e.g. offline device during a screen transition) would otherwise surface
+    // an unhandled promise rejection (RN red-box / Sentry noise). Swallowing to
+    // a log here means the returned promise always resolves once delivery
+    // settles — matching the pre-existing fire-and-forget behavior — while
+    // still letting callers `await flush()` to know the batch was sent.
     await state.initPromise;
-    await MGMClient.flush();
+    await MGMClient.flush().catch((e) => log('Flush error:', e));
   },
 
   /**

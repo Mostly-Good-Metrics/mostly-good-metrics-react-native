@@ -84,13 +84,17 @@ describe('AsyncStorageEventStorage', () => {
     });
 
     it('does not clobber events fired in a synchronous burst before the cache is warm', async () => {
-      // Real backing store so concurrent reads observe prior writes, and a
-      // one-tick delay on getItem to widen the read-modify-write window that a
-      // naive (unserialized) implementation would lose events through.
+      // Real backing store so concurrent reads observe prior writes. getItem
+      // resolves on the SAME microtask (no setTimeout). This is essential: a
+      // setTimeout(…, 0) macrotask delay drains microtasks between each store,
+      // so each read-modify-write completes before the next begins — that
+      // SERIALIZES the burst and hides the bug (it passes even on the unfixed,
+      // unserialized storage). In-microtask resolution lets the synchronous
+      // burst genuinely race the read-modify-write window that a naive
+      // implementation loses events through.
       const backing = new Map<string, string>();
       mockAsyncStorage.getItem.mockImplementation(
-        (key: string) =>
-          new Promise((resolve) => setTimeout(() => resolve(backing.get(key) ?? null), 0))
+        async (key: string) => backing.get(key) ?? null
       );
       mockAsyncStorage.setItem.mockImplementation(async (key: string, value: string) => {
         backing.set(key, value);
