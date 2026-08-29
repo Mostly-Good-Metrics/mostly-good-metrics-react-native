@@ -219,6 +219,31 @@ describe('MostlyGoodMetrics React Native SDK', () => {
       const configArg = mockConfigure.mock.calls[0][0];
       expect(configArg.trackAppLifecycleEvents).toBe(false);
     });
+
+    it('should forward a dynamic context provider to the JavaScript core', async () => {
+      const contextProvider = () => ({ organization_id: 'org_123' });
+      MostlyGoodMetrics.configure('test-api-key', { contextProvider });
+
+      await flushInit();
+
+      expect(mockConfigure.mock.calls[0][0].contextProvider).toBe(contextProvider);
+    });
+
+    it('should seed an existing installation without tracking app_installed', async () => {
+      MostlyGoodMetrics.configure('test-api-key', {
+        appVersion: '2.0.0',
+        existingInstallation: true,
+      });
+
+      await flushInit();
+      await flushInit();
+
+      expect(mockTrack.mock.calls.some(([name]) => name === '$app_installed')).toBe(false);
+      expect(mockAsyncStorage.setItem).toHaveBeenCalledWith(
+        'mostlygoodmetrics_app_version',
+        '2.0.0'
+      );
+    });
   });
 
   describe('super properties', () => {
