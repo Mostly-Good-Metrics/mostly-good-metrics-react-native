@@ -228,6 +228,8 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 | `maxStoredEvents` | `10000` | Max cached events |
 | `enableDebugLogging` | `false` | Enable console output |
 | `trackAppLifecycleEvents` | `true` | Auto-track lifecycle events |
+| `existingInstallation` | `false` | Establish lifecycle state without a migration-time `$app_installed` |
+| `contextProvider` | - | Dynamic properties evaluated for each captured event |
 | `optedOutByDefault` | `false` | Start opted out until `optIn()` is called (consent-first apps) |
 | `collectDeviceProperties` | `true` | Collect `$device_type` (and device/locale context in the JS core) |
 | `experimentMode` | `'server'` | `'server'` (server-assigned variants) or `'local'` (on-device bucketing, see [Local Experiment Enrollment](#local-experiment-enrollment)) |
@@ -245,6 +247,22 @@ When `trackAppLifecycleEvents` is enabled (default), the SDK automatically track
 | `$app_backgrounded` | App resigned active (background) | - |
 
 > **Note:** Install and update detection require `appVersion` to be configured.
+
+### Migrating an existing app
+
+When adding MGM to an app that is already in the App Store or Play Store, set
+`existingInstallation` from your previous provider's persisted install marker:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  appVersion: version,
+  existingInstallation: legacyAnalytics.hasInstallationMarker(),
+});
+```
+
+MGM records the current version as its lifecycle baseline without emitting a
+false `$app_installed`; later upgrades still emit `$app_updated`. Do not set it
+to `true` for every user, or genuine new installs will be suppressed.
 
 ## Automatic Properties
 
@@ -338,6 +356,25 @@ MostlyGoodMetrics.track('checkout', {
   },
 });
 ```
+
+### Dynamic global properties
+
+Use `contextProvider` for values that can change during a session. It is
+evaluated for every event and is not persisted:
+
+```typescript
+MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
+  contextProvider: () => ({
+    organization_id: currentOrganization.id,
+    subscription_tier: currentUser.plan,
+  }),
+});
+```
+
+Collision precedence is: super properties < dynamic context < event properties
+< MGM system properties. `$`-prefixed keys are reserved; with
+`enableDebugLogging: true`, the JavaScript core warns if custom event/context
+properties use those keys.
 
 **Limits:**
 - String values: truncated to 1000 characters

@@ -82,6 +82,19 @@ export interface ReactNativeConfig
   appVersion?: string;
 
   /**
+   * Treat the first MGM launch as an existing installation during a provider
+   * migration. Establishes lifecycle state without emitting `$app_installed`.
+   * @default false
+   */
+  existingInstallation?: boolean;
+
+  /**
+   * Dynamic properties evaluated for every event by the JavaScript core.
+   * Merge precedence is: super properties < context < event < system.
+   */
+  contextProvider?: () => EventProperties;
+
+  /**
    * Start opted out of tracking until optIn() is called.
    * Useful for consent-first apps. A previously persisted opt-in/opt-out
    * choice (from optIn()/optOut()) takes precedence over this default.
@@ -247,16 +260,20 @@ function handleAppStateChange(nextAppState: AppStateStatus) {
 /**
  * Track app install or update events.
  */
-async function trackInstallOrUpdate(appVersion?: string) {
+async function trackInstallOrUpdate(appVersion?: string, existingInstallation = false) {
   if (!appVersion) return;
 
   const previousVersion = await persistence.getAppVersion();
   const isFirst = await persistence.isFirstLaunch();
 
   if (isFirst) {
-    trackLifecycleEvent(SystemEvents.APP_INSTALLED, {
-      [SystemProperties.VERSION]: appVersion,
-    });
+    if (!existingInstallation) {
+      trackLifecycleEvent(SystemEvents.APP_INSTALLED, {
+        [SystemProperties.VERSION]: appVersion,
+      });
+    } else {
+      log(`Seeded lifecycle state for existing installation at ${appVersion}`);
+    }
     await persistence.setAppVersion(appVersion);
   } else if (previousVersion && previousVersion !== appVersion) {
     trackLifecycleEvent(SystemEvents.APP_UPDATED, {
@@ -376,7 +393,9 @@ const MostlyGoodMetrics = {
         trackLifecycleEvent(SystemEvents.APP_OPENED);
 
         // Track install/update
-        trackInstallOrUpdate(config.appVersion).catch((e) => log('Install/update tracking error:', e));
+        trackInstallOrUpdate(config.appVersion, config.existingInstallation).catch((e) =>
+          log('Install/update tracking error:', e)
+        );
 
         // Subscribe to app state changes
         state.appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
