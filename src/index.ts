@@ -18,7 +18,7 @@ import {
 } from './storage';
 
 /** SDK version for metrics headers */
-const SDK_VERSION = '0.7.0';
+const SDK_VERSION = '0.8.0';
 
 export type { MGMConfiguration, EventProperties, UserProfile };
 
