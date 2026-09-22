@@ -9,6 +9,7 @@ A lightweight React Native SDK for tracking analytics events with [MostlyGoodMet
 - [Quick Start](#quick-start)
 - [User Identification](#user-identification)
 - [Privacy](#privacy)
+- [Apple privacy manifest](#apple-privacy-manifest)
 - [Configuration Options](#configuration-options)
 - [Automatic Events](#automatic-events)
 - [Automatic Properties](#automatic-properties)
@@ -198,6 +199,12 @@ MostlyGoodMetrics.configure('mgm_proj_your_api_key', {
 When `false`, the wrapper omits `$device_type` and the JS core omits `$device_model` and `locale`/`timezone` context. Platform, OS version and app version are still sent.
 
 > **Note:** The JS core's `respectDoNotTrack` and `persistence` options are web-only (browser Do Not Track / Global Privacy Control signals and cookie/localStorage persistence modes) and are not part of the React Native configuration.
+
+## Apple privacy manifest
+
+This SDK has no native iOS or macOS code, so it does not ship its own privacy manifest. Its optional AsyncStorage dependency requires version 1.23.1 or newer, which ships a `PrivacyInfo.xcprivacy` manifest. If your app uses an older AsyncStorage version, upgrade it to at least 1.23.1.
+
+Declare MGM's data collection in your app's own privacy manifest and App Store privacy label. See the [MGM privacy documentation](https://docs.mostlygoodmetrics.com/features/privacy) for details.
 
 ## Configuration Options
 
