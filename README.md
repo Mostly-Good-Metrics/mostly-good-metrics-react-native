@@ -484,6 +484,7 @@ The SDK handles many tasks automatically to provide a seamless analytics experie
 ### Event Storage & Delivery
 
 - **Persists events**: Stores events in AsyncStorage for durability across app restarts (with in-memory fallback if AsyncStorage unavailable)
+- **Keeps tracking responsive**: Defers and coalesces whole-queue serialization so a burst does not re-encode storage inside each `track()` call
 - **Batches events**: Groups events together for efficient network usage (default: 100 events per batch, configurable via `maxBatchSize`)
 - **Flushes on interval**: Automatically sends events every 30 seconds (configurable via `flushInterval`)
 - **Flushes on background**: Sends pending events when app enters background to ensure data is captured even if app is killed

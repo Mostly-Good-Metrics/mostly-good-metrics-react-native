@@ -122,6 +122,29 @@ describe('AsyncStorageEventStorage', () => {
       const saved = JSON.parse(backing.get('mostlygoodmetrics_events')!);
       expect(saved.map((e: { name: string }) => e.name)).toEqual(['a', 'b', 'c']);
     });
+
+    it('defers and coalesces a synchronous burst into one persistence write', async () => {
+      const mk = (name: string) => ({
+        name,
+        client_event_id: name,
+        timestamp: '2024-01-01T00:00:00Z',
+        user_id: '$anon_test123456',
+        platform: 'ios' as const,
+        environment: 'test',
+      });
+
+      const writes = [storage.store(mk('a')), storage.store(mk('b')), storage.store(mk('c'))];
+
+      expect(mockAsyncStorage.setItem).not.toHaveBeenCalled();
+      await Promise.all(writes);
+
+      expect(mockAsyncStorage.setItem).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(mockAsyncStorage.setItem.mock.calls[0][1])).toEqual([
+        mk('a'),
+        mk('b'),
+        mk('c'),
+      ]);
+    });
   });
 
   describe('fetchEvents', () => {
