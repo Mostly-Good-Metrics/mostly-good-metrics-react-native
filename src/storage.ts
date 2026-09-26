@@ -199,11 +199,26 @@ export class AsyncStorageEventStorage implements IEventStorage {
     });
   }
 
-  removeEvents(count: number): Promise<void> {
+  removeEvents(count: number, clientEventIds?: string[]): Promise<void> {
     let save = Promise.resolve();
     const mutation = this.enqueue(async () => {
       const events = await this.loadEvents();
-      events.splice(0, count);
+      if (clientEventIds?.length) {
+        const sentIds = new Set(clientEventIds.filter(Boolean));
+        let idlessEventsToRemove = Math.max(0, count - sentIds.size);
+        this.events = events.filter((event) => {
+          if (event.client_event_id) {
+            return !sentIds.has(event.client_event_id);
+          }
+          if (idlessEventsToRemove > 0) {
+            idlessEventsToRemove -= 1;
+            return false;
+          }
+          return true;
+        });
+      } else {
+        events.splice(0, count);
+      }
       save = this.scheduleSave();
     });
     return mutation.then(() => save);
