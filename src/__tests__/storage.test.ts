@@ -187,6 +187,48 @@ describe('AsyncStorageEventStorage', () => {
       expect(savedData).toHaveLength(1);
       expect(savedData[0].name).toBe('event3');
     });
+
+    it('does not remove an unsent event when the sent event was trimmed at the cap', async () => {
+      const cappedStorage = new AsyncStorageEventStorage(100);
+      for (let index = 0; index < 100; index += 1) {
+        await cappedStorage.store({
+          name: `event${index}`,
+          client_event_id: `event-${index}`,
+          timestamp: '2024-01-01T00:00:00Z',
+          user_id: 'test-user',
+          platform: 'ios',
+          environment: 'test',
+        });
+      }
+      const sentEvent = (await cappedStorage.fetchEvents(1))[0]!;
+
+      await cappedStorage.store({
+        name: 'new_event',
+        client_event_id: 'new-event',
+        timestamp: '2024-01-01T00:00:01Z',
+        user_id: 'test-user',
+        platform: 'ios',
+        environment: 'test',
+      });
+      await cappedStorage.removeEvents(1, [sentEvent.client_event_id]);
+
+      const remaining = await cappedStorage.fetchEvents(100);
+      expect(remaining).toHaveLength(100);
+      expect(remaining[0]?.client_event_id).toBe('event-1');
+      expect(remaining.at(-1)?.client_event_id).toBe('new-event');
+    });
+
+    it('removes only the sent count of ID-less legacy events', async () => {
+      const events = [
+        { name: 'sent', timestamp: '2024-01-01T00:00:00Z', platform: 'ios', environment: 'test' },
+        { name: 'unsent', timestamp: '2024-01-01T00:00:01Z', platform: 'ios', environment: 'test' },
+      ];
+      mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(events));
+
+      await storage.removeEvents(1, [undefined as unknown as string]);
+
+      expect(await storage.fetchEvents(10)).toEqual([events[1]]);
+    });
   });
 
   describe('eventCount', () => {
