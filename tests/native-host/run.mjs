@@ -57,11 +57,11 @@ function command(
   const stdout = result.stdout || "";
   const stderr = result.stderr || "";
   const text = stdout + stderr;
+  const loggedStdout = filterLogOutput(stdout, "stdout");
+  const loggedStderr = filterLogOutput(stderr, "stderr");
   if (log) {
     // Preserve partial output and the actual transport/exit result before any
     // assertion throws. Every caller-supplied log path is inside our fixture.
-    const loggedStdout = filterLogOutput(stdout, "stdout");
-    const loggedStderr = filterLogOutput(stderr, "stderr");
     writeFileSync(join(output, log), loggedStdout + loggedStderr);
     writeFileSync(
       join(output, `${log}.command.log`),
@@ -89,7 +89,7 @@ function command(
       !stderr.trim());
   if (!allowFailure && (result.error || !acceptedExit))
     throw new Error(
-      `${binary} failed (${result.status}): ${result.error || text.slice(-6000)}`,
+      `${binary} failed (${result.status}): ${result.error || (loggedStdout + loggedStderr).slice(-6000)}`,
     );
   return text.trim();
 }
@@ -244,7 +244,7 @@ try {
     }
     if (!/^\d+$/.test(pid))
       throw new Error(`Fixture did not start with one host process: ${pid}`);
-    const host = { pid, since, evidencePrefix };
+    const host = { pid, since, evidencePrefix, ...fixtureIdentity };
     let process;
     try {
       process = readExpectedProcess(host);
@@ -272,6 +272,15 @@ try {
       throw new Error(`Invalid fixture PID query output: ${pid}`);
     return pid;
   };
+  const processErrorEvidence = (text) =>
+    text
+      .split("\n")
+      .filter((line) =>
+        /^(?:adb:|error:|transport error:|cat: \/proc\/\d+\/(?:stat|status|cmdline):)/.test(
+          line,
+        ),
+      )
+      .join("\n");
   const parseProcessStat = (host, text) => {
     const closing = text.lastIndexOf(")");
     const pid = text.slice(0, text.indexOf(" "));
@@ -295,7 +304,7 @@ try {
       maxBuffer: 16 * 1024,
       log: `${host.evidencePrefix}-process-stat.log`,
       filterLogOutput: (text, stream) => {
-        if (stream === "stderr") return text;
+        if (stream === "stderr") return processErrorEvidence(text);
         try {
           return JSON.stringify(parseProcessStat(host, text));
         } catch {
@@ -310,22 +319,79 @@ try {
       throw new Error(`Host PID was reused: ${host.pid}`);
     return process;
   };
+  const parseProcessStatus = (text) => {
+    const field = (name) => {
+      const matches = [
+        ...text.matchAll(new RegExp(`^${name}:\\s*(.*)$`, "gm")),
+      ];
+      if (matches.length !== 1) throw new Error("Invalid expected PID status");
+      return matches[0][1].trim();
+    };
+    const pid = field("Pid");
+    const tgid = field("Tgid");
+    const state = field("State").match(/^([RSDTtZXxIWKP])(?:\s|$)/)?.[1];
+    const uids = field("Uid").split(/\s+/);
+    if (
+      !/^\d+$/.test(pid) ||
+      !/^\d+$/.test(tgid) ||
+      !state ||
+      uids.length !== 4 ||
+      !uids.every((uid) => /^\d+$/.test(uid))
+    )
+      throw new Error("Invalid expected PID status");
+    return { pid, tgid, state, uids };
+  };
+  const statusEvidence = (host, text, stream) => {
+    if (stream === "stderr") return processErrorEvidence(text);
+    try {
+      const { pid, tgid, state, uids } = parseProcessStatus(text);
+      const fixtureUIDMatches = uids.every((uid) => uid === host.uid);
+      return JSON.stringify({
+        pid,
+        tgid,
+        state,
+        fixtureUIDMatches,
+        ...(fixtureUIDMatches ? { uid: host.uid } : {}),
+      });
+    } catch {
+      return "Invalid expected PID status";
+    }
+  };
+  const commandlineEvidence = (text, stream) => {
+    if (stream === "stderr") return processErrorEvidence(text);
+    const argv0 = text.split("\0")[0];
+    return JSON.stringify({
+      classification: !argv0
+        ? "empty"
+        : argv0 === appId
+          ? "fixture"
+          : ["zygote", "zygote32", "zygote64", "usap32", "usap64"].includes(
+                argv0,
+              )
+            ? "android-startup"
+            : "other",
+      byteLength: Buffer.byteLength(text, "utf8"),
+    });
+  };
   const readExpectedProcess = (host) => {
     const before = readProcessStat(host);
-    const identity = device(["shell", "cat", `/proc/${host.pid}/cmdline`], {
+    const text = device(["shell", "cat", `/proc/${host.pid}/status`], {
       maxBuffer: 16 * 1024,
-      log: `${host.evidencePrefix}-process-identity.log`,
-      filterLogOutput: (text, stream) =>
-        stream === "stderr"
-          ? text
-          : text.split("\0")[0] === appId
-            ? appId
-            : "Expected PID identity does not match fixture",
+      log: `${host.evidencePrefix}-process-status.log`,
+      filterLogOutput: (text, stream) => statusEvidence(host, text, stream),
     });
-    if (identity.split("\0")[0] !== appId)
-      throw new Error(`Host PID identity changed: ${host.pid}`);
-    // Detect reuse during the separate stat/identity reads, including a new
-    // process using the same package name. Initial launch binds this snapshot.
+    const status = parseProcessStatus(text);
+    if (status.pid !== host.pid || status.tgid !== host.pid)
+      throw new Error(`Host PID status changed: ${host.pid}`);
+    if (/^[ZXx]$/.test(status.state))
+      throw new Error(`Host process is dead: ${host.pid} (${status.state})`);
+    if (
+      !/^\d+$/.test(host.uid ?? "") ||
+      !status.uids.every((uid) => uid === host.uid)
+    )
+      throw new Error(`Host UID ownership changed: ${host.pid}`);
+    // UID is kernel ownership; argv0 and thread names are mutable. Detect PID
+    // reuse during these separate reads, including a process with the same UID.
     return readProcessStat({
       ...host,
       startTime: host.startTime ?? before.startTime,
@@ -373,43 +439,23 @@ try {
         return "";
       }
     };
-    const identity = diagnostic(
+    diagnostic(
       `${host.evidencePrefix}-pid-identity.log`,
       ["shell", "cat", `/proc/${host.pid}/cmdline`],
       {
         maxBuffer: 16 * 1024,
-        filterLogOutput: (text, stream) =>
-          stream === "stderr"
-            ? text
-            : text.split("\0")[0] === appId
-              ? appId
-              : text.trim()
-                ? "Expected PID no longer identifies own fixture"
-                : "",
+        filterLogOutput: commandlineEvidence,
       },
     );
-    // Do not persist another app's status if Android has already reused the PID.
-    if (identity.split("\0")[0] === appId) {
-      diagnostic(
-        `${host.evidencePrefix}-pid-status.log`,
-        ["shell", "cat", `/proc/${host.pid}/status`],
-        {
-          maxBuffer: 16 * 1024,
-          filterLogOutput: (text, stream) => {
-            if (stream === "stderr") return text;
-            const name = text.match(/^Name:\s+(.*)$/m)?.[1].trim();
-            if (![appId, appId.slice(-15)].includes(name))
-              return "Expected PID status no longer identifies own fixture";
-            return text
-              .split("\n")
-              .filter((line) =>
-                /^(Name|State|Tgid|Pid|PPid|Threads):/.test(line),
-              )
-              .join("\n");
-          },
-        },
-      );
-    }
+    // UID values and unrelated names are never persisted for a foreign process.
+    diagnostic(
+      `${host.evidencePrefix}-pid-status.log`,
+      ["shell", "cat", `/proc/${host.pid}/status`],
+      {
+        maxBuffer: 16 * 1024,
+        filterLogOutput: (text, stream) => statusEvidence(host, text, stream),
+      },
+    );
     diagnostic(`${host.evidencePrefix}-exit-info.log`, [
       "shell",
       "dumpsys",
@@ -488,8 +534,61 @@ try {
         `Native host error: ${text.match(/^.*(?:MGM_RN_FAIL|MGM_RN_HOST_ERROR|Unhandled|FATAL EXCEPTION|Fatal signal).*$/im)?.[0]}`,
       );
   };
+  const resolveFixtureIdentity = () => {
+    const user = device(["shell", "am", "get-current-user"], {
+      log: "fixture-current-user.log",
+      maxBuffer: 16 * 1024,
+    });
+    if (!/^(0|[1-9]\d*)$/.test(user) || !Number.isSafeInteger(Number(user)))
+      throw new Error("Invalid current Android user");
+    const text = device(
+      [
+        "shell",
+        "cmd",
+        "package",
+        "list",
+        "packages",
+        "-U",
+        "--user",
+        user,
+        appId,
+      ],
+      {
+        log: "fixture-package-uid.log",
+        maxBuffer: 16 * 1024,
+        filterLogOutput: (text, stream) =>
+          stream === "stderr"
+            ? processErrorEvidence(text)
+            : text
+                .split("\n")
+                .filter((line) => line.startsWith(`package:${appId} uid:`))
+                .join("\n"),
+      },
+    );
+    const matches = text
+      .split("\n")
+      .filter((line) => line.startsWith(`package:${appId} uid:`));
+    const uid =
+      matches.length === 1
+        ? matches[0].slice(`package:${appId} uid:`.length)
+        : "";
+    const numericUID = Number(uid);
+    if (
+      !/^\d+$/.test(uid) ||
+      !Number.isSafeInteger(numericUID) ||
+      numericUID > 2147483647 ||
+      Math.floor(numericUID / 100000) !== Number(user) ||
+      numericUID % 100000 < 10000 ||
+      numericUID % 100000 >= 20000
+    )
+      throw new Error(
+        "Cannot resolve unique fixture package UID for current user",
+      );
+    return { user, uid };
+  };
   // Repeat the full workload with the same built APK. These are independent
   // launch pairs, never retries: any failure terminates the run immediately.
+  const fixtureIdentity = resolveFixtureIdentity();
   const launchResults = [];
   for (let pair = 1; pair <= 5; pair++) {
     const phase = `launch-${pair}`;
@@ -590,6 +689,8 @@ try {
       rejectionDetectorVerified,
       negativePid: probe.pid,
       negativeStartTime: probe.startTime,
+      user: host.user,
+      uid: host.uid,
       pid,
       startTime: host.startTime,
       abi,

@@ -30,10 +30,12 @@ async function check(fault) {
     launches = [],
     sleeps = [],
     sqlite = 0,
-    statReads = 0;
+    statReads = 0,
+    statusReads = 0;
   const files = new Map();
   const sandbox = {
     appId: "com.mgm.rnhermeshost",
+    Buffer,
     adb: "/fake/adb",
     serial: "emulator-5554",
     output: "/own-fixture",
@@ -72,6 +74,15 @@ async function check(fault) {
         currentPid = "";
         return "";
       }
+      if (args.includes("get-current-user")) return "0";
+      if (args.includes("packages"))
+        return "package:com.mgm.rnhermeshost uid:10209";
+      if (args.some((arg) => arg.endsWith("/status"))) {
+        const uid =
+          fault === "initial-foreign-uid" && statusReads === 0 ? "0" : "10209";
+        statusReads++;
+        return `Name:\tmutable-name\nState:\tR (running)\nPid:\t${currentPid}\nTgid:\t${currentPid}\nUid:\t${Array(4).fill(uid).join(" ")}`;
+      }
       if (args.includes("date")) return "10-02 16:00:00.000";
       if (args.includes("KEYCODE_HOME")) {
         background = true;
@@ -86,6 +97,7 @@ async function check(fault) {
           background = false;
           resumed = false;
           statReads = 0;
+          statusReads = 0;
         } else {
           assert.equal(mode, "positive");
           assert.ok(background);
@@ -148,12 +160,16 @@ async function check(fault) {
       assert.ok(files.has(`launch-${i}-rejection-probe.log`));
       assert.ok(files.has(`launch-${i}-native-storage.sqlite`));
       assert.equal(summary.launches[i - 1].startTime, "100");
+      assert.equal(summary.launches[i - 1].uid, "10209");
+      assert.equal(summary.launches[i - 1].user, "0");
       assert.equal(summary.launches[i - 1].negativeStartTime, "100");
       for (const mode of ["negative", "positive"]) {
         const binding = JSON.parse(
           files.get(`launch-${i}-${mode}-bound-process.log`),
         );
         assert.equal(binding.startTime, "100");
+        assert.equal(binding.uid, "10209");
+        assert.equal(binding.user, "0");
         assert.equal(
           binding.pid,
           mode === "negative"
@@ -170,6 +186,7 @@ async function check(fault) {
     const expected = {
       death: /Host process is dead/,
       "initial-death": /Host process is dead/,
+      "initial-foreign-uid": /Host UID ownership changed/,
       fatal: /Native host error/,
       sentinel: /Native host error/,
       sqlite: /synthetic sqlite failure/,
@@ -182,6 +199,7 @@ async function check(fault) {
     const stoppedPhase = {
       death: 3,
       "initial-death": 1,
+      "initial-foreign-uid": 1,
       fatal: 4,
       sentinel: 2,
       sqlite: 2,
@@ -189,14 +207,28 @@ async function check(fault) {
     assert.equal(phase, stoppedPhase, "a failed phase was retried or skipped");
     if (fault === "death")
       assert.ok(files.has("launch-3-positive-delayed-exit-info.log"));
-    if (fault === "initial-death") {
+    if (["initial-death", "initial-foreign-uid"].includes(fault)) {
       assert.ok(files.has("launch-1-negative-delayed-exit-info.log"));
       assert.ok(!files.has("launch-1-negative-bound-process.log"));
       assert.equal(launches.length, 1);
+      if (fault === "initial-foreign-uid")
+        assert.equal(
+          statusReads,
+          2,
+          "initial foreign UID gets one verification read and one diagnostic, never a settling retry",
+        );
     }
   }
 }
 async function checkCalibrationIsolation() {
+  const manifest = fs.readFileSync(
+    path.join(root, "tests/native-host/app/src/main/AndroidManifest.xml"),
+    "utf8",
+  );
+  assert.ok(
+    !/(?:sharedUserId|android:process|isolatedProcess)/.test(manifest),
+    "UID identity proof requires one nonshared fixture application process",
+  );
   const input = fs.readFileSync(
     path.join(root, "tests/native-host/index.js"),
     "utf8",
@@ -291,10 +323,12 @@ async function checkScopedDiagnostics() {
   );
   const monitorCode =
     source.slice(monitorStart, monitorEnd) +
-    "\n({ readHostLog, readPid, assertNoHostError, fixtureSystemRecords, collectHostDiagnostics });";
-  const host = {
+    "\n({ readHostLog, readPid, assertNoHostError, fixtureSystemRecords, collectHostDiagnostics, resolveFixtureIdentity, commandlineEvidence });";
+  const hostTemplate = {
     pid: "4102",
     startTime: "900719925474099312345",
+    uid: "10209",
+    user: "0",
     since: "10-02 16:00:00.000",
     evidencePrefix: "phase",
   };
@@ -315,7 +349,7 @@ async function checkScopedDiagnostics() {
     "timeout",
     "fatal",
     "diagfail",
-    "reuse",
+    "mutableargv",
     "status-reuse",
     "system-error",
     "dead-X",
@@ -323,18 +357,38 @@ async function checkScopedDiagnostics() {
     "malformed",
     "missing",
     "stat255",
-    "identity-missing",
-    "identity255",
+    "status-missing",
+    "status255",
+    "foreign-uid",
+    "uid-0",
+    "uid-1",
+    "uid-2",
+    "uid-3",
+    "status-pid",
+    "status-tgid",
+    "status-dead",
+    "status-malformed",
+    "status-duplicate",
+    "uid-short",
+    "uid-long",
+    "package-foreign",
+    "package-duplicate",
+    "package-user",
+    "user10",
+    "wronguser10",
+    "package255",
     "clock-reuse",
     "mid-identity-reuse",
     "post-log-reuse",
   ]) {
+    const host = { ...hostTemplate };
     const files = new Map(),
       calls = [],
       sleeps = [];
     let statReads = 0;
     const context = {
       appId: "com.mgm.rnhermeshost",
+      Buffer,
       adb: "/fake/adb",
       serial: "emulator-5554",
       output: "/own-fixture",
@@ -359,7 +413,7 @@ async function checkScopedDiagnostics() {
             [
               "empty",
               "diagfail",
-              "reuse",
+              "mutableargv",
               "status-reuse",
               "system-error",
             ].includes(fault)
@@ -409,23 +463,53 @@ async function checkScopedDiagnostics() {
             });
         } else if (args.some((arg) => arg.endsWith("/cmdline"))) {
           assert.equal(options.maxBuffer, 16 * 1024);
-          result.stdout =
-            (fault === "reuse" ? "com.other" : "com.mgm.rnhermeshost") + "\0";
-          if (fault === "identity-missing")
+          result.stdout = "secret-other-name\0";
+        } else if (args.some((arg) => arg.endsWith("/status"))) {
+          assert.equal(options.maxBuffer, 16 * 1024);
+          const uids = Array(4).fill(
+            fault === "wronguser10" ? "10209" : host.uid,
+          );
+          if (fault === "foreign-uid" || fault === "status-reuse")
+            uids.fill("0");
+          if (/^uid-[0-3]$/.test(fault ?? "")) uids[Number(fault.at(-1))] = "0";
+          if (fault === "uid-short") uids.pop();
+          if (fault === "uid-long") uids.push(host.uid);
+          result.stdout = `Name:\tsecret-other-name\nState:\t${fault === "status-dead" ? "Z" : "R"} (state)\nPid:\t${fault === "status-pid" ? "4200" : "4102"}\nTgid:\t${fault === "status-tgid" ? "4200" : "4102"}\nUid:\t${uids.join(" ")}\nVmRSS:\tsecret-other-memory`;
+          if (fault === "status-duplicate")
+            result.stdout += "\nUid: 10209 10209 10209 10209";
+          if (fault === "status-malformed")
+            result.stdout = "State:\tR\nPid:\t4102";
+          if (fault === "status-missing")
             Object.assign(result, {
               status: 1,
               stdout: "",
-              stderr: "cat: /proc/4102/cmdline: No such file or directory",
+              stderr: "cat: /proc/4102/status: No such file or directory",
             });
-          if (fault === "identity255")
+          if (fault === "status255")
             Object.assign(result, {
               status: 255,
-              stdout: "",
-              stderr: "adb: device offline",
+              stdout: "secret-other-memory\nName: secret-other-name",
+              stderr:
+                "adb: device offline\nActivityManager: secret-other-memory",
             });
-        } else if (args.some((arg) => arg.endsWith("/status"))) {
-          assert.equal(options.maxBuffer, 16 * 1024);
-          result.stdout = `Name:\t${fault === "status-reuse" ? "other" : "gm.rnhermeshost"}\nState:\tZ (zombie)\nPid:\t4102\nThreads:\t2\nUid:\tsecret-other-uid\nVmRSS:\tsecret-other-memory`;
+        } else if (args.includes("get-current-user")) {
+          result.stdout = ["user10", "wronguser10"].includes(fault)
+            ? "10"
+            : "0";
+        } else if (args.includes("packages")) {
+          result.stdout =
+            fault === "package-foreign"
+              ? "package:com.other uid:10209"
+              : fault === "package-duplicate"
+                ? "package:com.mgm.rnhermeshost uid:10209\npackage:com.mgm.rnhermeshost uid:10210"
+                : `package:com.mgm.rnhermeshost uid:${["user10", "wronguser10", "package-user"].includes(fault) ? "1010209" : "10209"}`;
+          if (fault === "package255")
+            Object.assign(result, {
+              status: 255,
+              stdout: "package:secret-other-name uid:secret-other-uid",
+              stderr:
+                "adb: device offline\nActivityManager: secret-other-memory",
+            });
         } else if (args.includes("exit-info")) {
           assert.equal(args.at(-1), "com.mgm.rnhermeshost");
           result.stdout =
@@ -490,6 +574,38 @@ async function checkScopedDiagnostics() {
       api.assertNoHostError(text);
       return text;
     };
+    if (fault === "package255") {
+      assert.throws(
+        () => api.resolveFixtureIdentity(),
+        (error) => {
+          assert.match(String(error), /failed \(255\)/);
+          assert.ok(!String(error).includes("secret-other"));
+          return true;
+        },
+      );
+      assert.ok(!JSON.stringify([...files.values()]).includes("secret-other"));
+      continue;
+    }
+    if (fault?.startsWith("package-")) {
+      assert.throws(
+        () => api.resolveFixtureIdentity(),
+        /Cannot resolve unique fixture package UID/,
+      );
+      continue;
+    }
+    const expectedIdentity = ["user10", "wronguser10"].includes(fault)
+      ? { user: "10", uid: "1010209" }
+      : { user: "0", uid: "10209" };
+    assert.equal(
+      JSON.stringify(api.resolveFixtureIdentity()),
+      JSON.stringify(expectedIdentity),
+    );
+    Object.assign(host, expectedIdentity);
+    calls.length = 0;
+    assert.deepEqual(
+      JSON.parse(api.commandlineEvidence("secret-other-name\0", "stdout")),
+      { classification: "other", byteLength: 18 },
+    );
     if (fault === "pid255" || fault === "pid1stderr") {
       assert.throws(
         () => api.readPid("query.log"),
@@ -498,14 +614,20 @@ async function checkScopedDiagnostics() {
       assert.equal(calls.length, 1);
       continue;
     }
-    if (!fault || fault === "empty") {
+    if (!fault || ["empty", "mutableargv", "user10"].includes(fault)) {
       if (fault === "empty")
         assert.equal(api.readPid("empty-name-query.log"), "");
       const discoveryCalls = calls.length;
       assert.match(await read(), /partial scoped/);
       assert.equal(calls.length - discoveryCalls, 7);
       assert.ok(
-        calls.slice(discoveryCalls).every((call) => !call.includes("pidof")),
+        calls
+          .slice(discoveryCalls)
+          .every(
+            (call) =>
+              !call.includes("pidof") &&
+              !call.some((arg) => arg.endsWith("/cmdline")),
+          ),
         "bound PID monitoring must not depend on a name lookup",
       );
       continue;
@@ -515,7 +637,19 @@ async function checkScopedDiagnostics() {
       timeout: /read timed out/,
       fatal: /Native host error/,
       diagfail: /Host process is dead/,
-      reuse: /Host PID identity changed/,
+      wronguser10: /Host UID ownership changed/,
+      "foreign-uid": /Host UID ownership changed/,
+      "uid-0": /Host UID ownership changed/,
+      "uid-1": /Host UID ownership changed/,
+      "uid-2": /Host UID ownership changed/,
+      "uid-3": /Host UID ownership changed/,
+      "status-pid": /Host PID status changed/,
+      "status-tgid": /Host PID status changed/,
+      "status-dead": /Host process is dead/,
+      "status-malformed": /Invalid expected PID status/,
+      "status-duplicate": /Invalid expected PID status/,
+      "uid-short": /Invalid expected PID status/,
+      "uid-long": /Invalid expected PID status/,
       "status-reuse": /Host process is dead/,
       "system-error": /Host process is dead/,
       "dead-X": /Host process is dead/,
@@ -523,13 +657,20 @@ async function checkScopedDiagnostics() {
       malformed: /Invalid expected PID stat/,
       missing: /failed \(1\)/,
       stat255: /failed \(255\)/,
-      "identity-missing": /failed \(1\)/,
-      identity255: /failed \(255\)/,
+      "status-missing": /failed \(1\)/,
+      status255: /failed \(255\)/,
       "clock-reuse": /Host PID was reused/,
       "mid-identity-reuse": /Host PID was reused/,
       "post-log-reuse": /Host PID was reused/,
     }[fault];
-    await assert.rejects(read(), expected);
+    await assert.rejects(read(), (error) => {
+      assert.match(String(error), expected);
+      assert.ok(
+        !String(error).includes("secret-other"),
+        "sanitized command failures must not leak raw foreign output",
+      );
+      return true;
+    });
     if (fault === "fatal") continue;
     if (!["post-log-reuse", "log255", "timeout"].includes(fault))
       assert.ok(
@@ -554,17 +695,11 @@ async function checkScopedDiagnostics() {
     assert.match(systemMetadata.stderr, /adb: device offline/);
     if (fault === "system-error") assert.equal(systemMetadata.status, 255);
     assert.ok(!JSON.stringify([...files.values()]).includes("secret-other"));
-    if (fault === "reuse") {
-      assert.ok(!files.has("phase-pid-status.log"));
-      assert.ok(
-        !JSON.stringify([...files.values()]).includes("com.other\u0000"),
-      );
+    if (fault === "status-reuse") {
+      const status = JSON.parse(files.get("phase-pid-status.log"));
+      assert.equal(status.fixtureUIDMatches, false);
+      assert.ok(!("uid" in status));
     }
-    if (fault === "status-reuse")
-      assert.match(
-        files.get("phase-pid-status.log"),
-        /no longer identifies own fixture/,
-      );
     if (fault === "log255") {
       const details = JSON.parse(files.get("positive.log.command.log"));
       assert.equal(details.status, 255);
@@ -573,7 +708,7 @@ async function checkScopedDiagnostics() {
     }
   }
   console.log(
-    "PASS bound live PID monitoring despite empty name query; dead/reused/invalid/transport controls, scoped async diagnostics and adversarial record filtering",
+    "PASS exact PackageManager UID/current-user and bound kernel process despite mutable argv or empty name query; dead/reused/invalid/transport controls, scoped async diagnostics and adversarial record filtering",
   );
 }
 
@@ -583,6 +718,7 @@ async function checkScopedDiagnostics() {
   for (const fault of [
     null,
     "initial-death",
+    "initial-foreign-uid",
     "death",
     "fatal",
     "sentinel",
