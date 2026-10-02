@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "node run.mjs"
+    "test": "npm run check && node run.mjs",
+    "check": "node check-fixture.cjs"
   },
   "dependencies": {
     "react": "18.2.0",

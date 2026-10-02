@@ -43,12 +43,14 @@ function command(
     timeout = 180000,
     allowFailure = false,
     acceptEmptyExitCodeOne = false,
+    maxBuffer = 20 * 1024 * 1024,
+    filterLogOutput = (text) => text,
   } = {},
 ) {
   const result = spawnSync(binary, args, {
     cwd,
     timeout,
-    maxBuffer: 20 * 1024 * 1024,
+    maxBuffer,
     encoding: "utf8",
     env: process.env,
   });
@@ -58,7 +60,9 @@ function command(
   if (log) {
     // Preserve partial output and the actual transport/exit result before any
     // assertion throws. Every caller-supplied log path is inside our fixture.
-    writeFileSync(join(output, log), text);
+    const loggedStdout = filterLogOutput(stdout, "stdout");
+    const loggedStderr = filterLogOutput(stderr, "stderr");
+    writeFileSync(join(output, log), loggedStdout + loggedStderr);
     writeFileSync(
       join(output, `${log}.command.log`),
       JSON.stringify(
@@ -69,8 +73,8 @@ function command(
           error: result.error
             ? { message: result.error.message, code: result.error.code }
             : null,
-          stdout,
-          stderr,
+          stdout: loggedStdout,
+          stderr: loggedStderr,
         },
         null,
         2,
@@ -251,19 +255,36 @@ try {
       throw new Error(`Invalid fixture PID query output: ${pid}`);
     return pid;
   };
-  const collectHostDiagnostics = (host) => {
-    for (const [name, args] of [
-      [
-        `${host.evidencePrefix}-exit-info.log`,
-        ["shell", "dumpsys", "activity", "exit-info", appId],
-      ],
-      [
-        `${host.evidencePrefix}-crash.log`,
-        ["logcat", "-d", "-b", "crash", `--pid=${host.pid}`, "-T", host.since],
-      ],
-    ]) {
+  const fixtureSystemRecords = (host, text, stream = "stdout") => {
+    const packageName = appId.split(".").join("\\.");
+    const ownPackage = new RegExp(
+      String.raw`(?:^|[^\w.])${packageName}(?:$|[^\w.])`,
+    );
+    // A bare numeric match could expose another app's memory usage or UID.
+    const ownPid = new RegExp(
+      String.raw`\b(?:pid\s*[=:]?\s*|process\s+|Killing\s+|Kill\s+)${host.pid}(?=\D|$)`,
+      "i",
+    );
+    return text
+      .split("\n")
+      .filter(
+        (line) =>
+          ownPackage.test(line) ||
+          ownPid.test(line) ||
+          (stream === "stderr" &&
+            /^(?:adb:|error:|logcat:|transport error:)/.test(line)),
+      )
+      .join("\n");
+  };
+  const collectHostDiagnostics = async (host) => {
+    const diagnostic = (name, args, options = {}) => {
       try {
-        device(args, { allowFailure: true, log: name });
+        return device(args, {
+          allowFailure: true,
+          log: name,
+          maxBuffer: 1024 * 1024,
+          ...options,
+        });
       } catch (error) {
         try {
           writeFileSync(
@@ -273,10 +294,97 @@ try {
         } catch {
           // A best-effort diagnostic must never replace the original failure.
         }
+        return "";
       }
+    };
+    const identity = diagnostic(
+      `${host.evidencePrefix}-pid-identity.log`,
+      ["shell", "cat", `/proc/${host.pid}/cmdline`],
+      {
+        maxBuffer: 16 * 1024,
+        filterLogOutput: (text, stream) =>
+          stream === "stderr"
+            ? text
+            : text.split("\0")[0] === appId
+              ? appId
+              : text.trim()
+                ? "Expected PID no longer identifies own fixture"
+                : "",
+      },
+    );
+    // Do not persist another app's status if Android has already reused the PID.
+    if (identity.split("\0")[0] === appId) {
+      diagnostic(
+        `${host.evidencePrefix}-pid-status.log`,
+        ["shell", "cat", `/proc/${host.pid}/status`],
+        {
+          maxBuffer: 16 * 1024,
+          filterLogOutput: (text, stream) => {
+            if (stream === "stderr") return text;
+            const name = text.match(/^Name:\s+(.*)$/m)?.[1].trim();
+            if (![appId, appId.slice(-15)].includes(name))
+              return "Expected PID status no longer identifies own fixture";
+            return text
+              .split("\n")
+              .filter((line) =>
+                /^(Name|State|Tgid|Pid|PPid|Threads):/.test(line),
+              )
+              .join("\n");
+          },
+        },
+      );
     }
+    diagnostic(`${host.evidencePrefix}-exit-info.log`, [
+      "shell",
+      "dumpsys",
+      "activity",
+      "exit-info",
+      appId,
+    ]);
+    diagnostic(`${host.evidencePrefix}-crash.log`, [
+      "logcat",
+      "-d",
+      "-b",
+      "crash",
+      `--pid=${host.pid}`,
+      "-T",
+      host.since,
+    ]);
+    diagnostic(
+      `${host.evidencePrefix}-system-records.log`,
+      [
+        "logcat",
+        "-d",
+        "-b",
+        "main",
+        "-b",
+        "system",
+        "-T",
+        host.since,
+        "ActivityManager:I",
+        "ActivityTaskManager:I",
+        "lmkd:I",
+        "lowmemorykiller:I",
+        "Zygote:I",
+        "*:S",
+      ],
+      {
+        filterLogOutput: (text, stream) =>
+          fixtureSystemRecords(host, text, stream),
+      },
+    );
+    // Exit-info registration may lag early process death. This samples only
+    // diagnostics; it never retries the workload, PID check or fatal assertion.
+    await sleep(1000);
+    diagnostic(`${host.evidencePrefix}-delayed-exit-info.log`, [
+      "shell",
+      "dumpsys",
+      "activity",
+      "exit-info",
+      appId,
+    ]);
   };
-  const readHostLog = (host, filename) => {
+  const readHostLog = async (host, filename) => {
     try {
       const current = readPid(host.evidencePrefix);
       const text = device(
@@ -289,7 +397,11 @@ try {
         );
       return text;
     } catch (error) {
-      collectHostDiagnostics(host);
+      try {
+        await collectHostDiagnostics(host);
+      } catch {
+        // Keep the original monitoring failure even if delayed diagnostics fail.
+      }
       throw error;
     }
   };
@@ -310,7 +422,7 @@ try {
     let rejectionDetectorVerified = false;
     const probeDeadline = Date.now() + 15000;
     while (Date.now() < probeDeadline) {
-      const text = readHostLog(probe, `${phase}-rejection-probe.log`);
+      const text = await readHostLog(probe, `${phase}-rejection-probe.log`);
       try {
         assertNoHostError(text);
       } catch (error) {
@@ -336,15 +448,15 @@ try {
     if (host.pid === probe.pid)
       throw new Error(`Launch pair reused the negative process: ${host.pid}`);
     const { pid } = host;
-    const readLog = () => {
-      const text = readHostLog(host, `${phase}-positive.log`);
+    const readLog = async () => {
+      const text = await readHostLog(host, `${phase}-positive.log`);
       assertNoHostError(text);
       return text;
     };
     const waitFor = async (marker) => {
       const deadline = Date.now() + 60000;
       while (Date.now() < deadline) {
-        const text = readLog();
+        const text = await readLog();
         if (text.includes(marker)) return text;
         await sleep(250);
       }
@@ -374,7 +486,7 @@ try {
         `Incomplete native smoke result: ${JSON.stringify(result)}`,
       );
     await sleep(2500);
-    readLog(); // Cover the rejection tracker's two-second grace after success.
+    await readLog(); // Cover the rejection tracker's two-second grace after success.
     const database = spawnSync(
       adb,
       ["-s", serial, "exec-out", "run-as", appId, "cat", "databases/RKStorage"],

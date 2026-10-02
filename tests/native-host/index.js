@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { AppRegistry, Text, View, AppState, NativeModules } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import MGM from "./candidate/index";
-import { getStorageType } from "./candidate/storage";
+let MGM;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let checks = 0,
   sends = 0,
@@ -67,7 +66,7 @@ function App({ rejectionProbe }) {
         JSON.stringify({ pass: false, error: String(error) }),
       );
     });
-    return () => MGM.destroy();
+    return () => MGM?.destroy();
   }, []);
   return React.createElement(
     View,
@@ -98,6 +97,10 @@ async function run(setStatus, rejectionProbe) {
       "rejection detector failed to observe controlled rejection",
     );
   }
+  // Calibration above executes without evaluating any MGM module. Only the
+  // positive workload loads the actual candidate wrapper and its storage.
+  MGM = require("./candidate/index").default;
+  const { getStorageType } = require("./candidate/storage");
   check(!!NativeModules.RNCAsyncStorage, "real native AsyncStorage");
   check(getStorageType() === "persistent", "candidate uses native persistence");
   check(
