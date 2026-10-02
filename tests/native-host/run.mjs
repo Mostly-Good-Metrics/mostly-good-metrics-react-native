@@ -202,10 +202,6 @@ try {
   };
   const readHostLog = (host, filename) => {
     const current = device(["shell", "pidof", appId], { allowFailure: true });
-    if (current !== host.pid)
-      throw new Error(
-        `Host died or restarted: expected PID ${host.pid}, got ${current}`,
-      );
     const text = device([
       "logcat",
       "-d",
@@ -214,6 +210,44 @@ try {
       host.since,
     ]);
     writeFileSync(join(output, filename), text);
+    if (current !== host.pid) {
+      // Retain the old process's evidence before failing. Both diagnostics are
+      // scoped to our fixture; command output remains capped by maxBuffer.
+      for (const [name, args] of [
+        [
+          "host-exit-info.log",
+          ["shell", "dumpsys", "activity", "exit-info", appId],
+        ],
+        [
+          "host-crash.log",
+          [
+            "logcat",
+            "-d",
+            "-b",
+            "crash",
+            `--pid=${host.pid}`,
+            "-T",
+            host.since,
+          ],
+        ],
+      ]) {
+        try {
+          const evidence = device(args, { allowFailure: true });
+          writeFileSync(
+            join(output, name),
+            `Expected PID ${host.pid}, observed ${current || "none"}\n${evidence}`,
+          );
+        } catch (error) {
+          writeFileSync(
+            join(output, name),
+            `Diagnostic collection failed: ${String(error)}`,
+          );
+        }
+      }
+      throw new Error(
+        `Host died or restarted: expected PID ${host.pid}, got ${current}`,
+      );
+    }
     return text;
   };
   const assertNoHostError = (text) => {

@@ -59,6 +59,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: react-native-hermes-host-safety
+          include-hidden-files: true
           path: |
             tests/native-host/.build-native/*.log
             tests/native-host/.build-native/logcat.txt
