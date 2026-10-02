@@ -130,6 +130,89 @@ describe('MostlyGoodMetrics React Native SDK', () => {
   });
 
 
+
+  describe('native lifecycle state refresh', () => {
+    it('refreshes stale cached background state before subscribing to an active host', async () => {
+      const state = (globalThis as unknown as { __MGM_RN_STATE__: { currentAppState: string | null } }).__MGM_RN_STATE__;
+      state.currentAppState = 'background';
+      MostlyGoodMetrics.configure('test-key');
+      await flushInit();
+      expect(state.currentAppState).toBe('active');
+      const callback = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+      (CoreClient as unknown as { shared: unknown }).shared = {};
+      try {
+        mockTrack.mockClear();
+        callback('background');
+        expect(mockTrack).toHaveBeenCalledWith('$app_backgrounded', undefined);
+        const later = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 2000);
+        try {
+          callback('active');
+          expect(mockTrack).toHaveBeenCalledWith('$app_opened', undefined);
+        } finally { later.mockRestore(); }
+      } finally { (CoreClient as unknown as { shared: unknown }).shared = null; }
+    });
+
+    it.each([null, 'throw'])('supports an unavailable native app state: %p', async (nativeState) => {
+      const descriptor = Object.getOwnPropertyDescriptor(AppState, 'currentState')!;
+      Object.defineProperty(AppState, 'currentState', { configurable: true, get: () => {
+        if (nativeState === 'throw') throw new Error('native state bridge unavailable');
+        return nativeState;
+      } });
+      try {
+        const state = (globalThis as unknown as { __MGM_RN_STATE__: { currentAppState: string | null } }).__MGM_RN_STATE__;
+        state.currentAppState = 'background';
+        expect(() => MostlyGoodMetrics.configure('test-key')).not.toThrow();
+        await flushInit();
+        expect(state.currentAppState).toBeNull();
+        const callback = (AppState.addEventListener as jest.Mock).mock.calls[0][1];
+        (CoreClient as unknown as { shared: unknown }).shared = {};
+        mockTrack.mockClear();
+        expect(() => callback('active')).not.toThrow();
+        expect(mockTrack).not.toHaveBeenCalled();
+        callback('background');
+        expect(mockTrack).toHaveBeenCalledWith('$app_backgrounded', undefined);
+      } finally {
+        (CoreClient as unknown as { shared: unknown }).shared = null;
+        Object.defineProperty(AppState, 'currentState', descriptor);
+      }
+    });
+
+
+    it('does not subscribe if the native state getter destroys the configuration', async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(AppState, 'currentState')!;
+      Object.defineProperty(AppState, 'currentState', { configurable: true, get: () => {
+        MostlyGoodMetrics.destroy();
+        return 'active';
+      } });
+      try {
+        MostlyGoodMetrics.configure('test-key');
+        await flushInit();
+        expect(AppState.addEventListener).not.toHaveBeenCalled();
+      } finally { Object.defineProperty(AppState, 'currentState', descriptor); }
+    });
+
+    it('keeps explicit tracking available after native listener registration throws', async () => {
+      (AppState.addEventListener as jest.Mock).mockImplementationOnce(() => { throw new Error('listener bridge unavailable'); });
+      MostlyGoodMetrics.configure('test-key');
+      await flushInit();
+      MostlyGoodMetrics.track('manual_after_listener_failure');
+      expect(mockTrack).toHaveBeenCalledWith('manual_after_listener_failure', expect.any(Object));
+    });
+
+    it('removes a synchronously returned listener if registration destroys the configuration', async () => {
+      const remove = jest.fn();
+      (AppState.addEventListener as jest.Mock).mockImplementationOnce(() => {
+        MostlyGoodMetrics.destroy();
+        return { remove };
+      });
+      MostlyGoodMetrics.configure('test-key');
+      await flushInit();
+      expect(remove).toHaveBeenCalledTimes(1);
+      const state = (globalThis as unknown as { __MGM_RN_STATE__: { appStateSubscription: unknown } }).__MGM_RN_STATE__;
+      expect(state.appStateSubscription).toBeNull();
+    });
+  });
+
   describe('failure containment', () => {
     it('handles a null initial native app state', async () => {
       MostlyGoodMetrics.configure('test-key');

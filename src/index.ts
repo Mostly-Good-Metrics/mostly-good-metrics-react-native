@@ -146,12 +146,23 @@ interface PrivacyCapableStatics {
 
 const PrivacyClient = MGMClient as unknown as PrivacyCapableStatics;
 
+function nativeAppState(): AppStateStatus | null {
+  try {
+    const current = AppState.currentState;
+    return typeof current === 'string' ? current : null;
+  } catch {
+    // Native state can be unavailable during startup. Unknown state should not
+    // fabricate a foreground/background transition or interrupt initialization.
+    return null;
+  }
+}
+
 // Use global to persist state across hot reloads
 const g = globalThis as typeof globalThis & {
   __MGM_RN_STATE__?: {
     appStateSubscription: { remove: () => void } | null;
     isConfigured: boolean;
-    currentAppState: AppStateStatus;
+    currentAppState: AppStateStatus | null;
     debugLogging: boolean;
     lastLifecycleEvent: { name: string; time: number } | null;
     clientReady: boolean;
@@ -172,7 +183,7 @@ if (!g.__MGM_RN_STATE__) {
   g.__MGM_RN_STATE__ = {
     appStateSubscription: null,
     isConfigured: false,
-    currentAppState: AppState.currentState,
+    currentAppState: nativeAppState(),
     debugLogging: false,
     lastLifecycleEvent: null,
     clientReady: false,
@@ -538,10 +549,21 @@ const MostlyGoodMetrics = {
           log('Install/update tracking error:', e)
         );
 
-        // Subscribe to app state changes
-        state.appStateSubscription = AppState.addEventListener('change', (nextAppState) => {
-          if (generation === state.initGeneration && state.isConfigured) handleAppStateChange(nextAppState);
-        });
+        // Module import may happen while the Activity is backgrounded. Refresh
+        // from native state at subscription time so the first real background
+        // transition is recognized after async configuration finishes.
+        state.currentAppState = nativeAppState();
+        if (generation !== state.initGeneration || !state.isConfigured) return;
+        try {
+          const subscription = AppState.addEventListener('change', (nextAppState) => {
+            if (generation === state.initGeneration && state.isConfigured) handleAppStateChange(nextAppState);
+          });
+          if (generation !== state.initGeneration || !state.isConfigured) {
+            try { subscription.remove(); } catch (error) { log('Listener cleanup error:', error); }
+          } else {
+            state.appStateSubscription = subscription;
+          }
+        } catch (error) { log('Listener registration error:', error); }
       }
     })().catch((e) => {
       log('Configuration error:', e);
