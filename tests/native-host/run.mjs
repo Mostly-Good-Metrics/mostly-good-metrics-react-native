@@ -17,7 +17,11 @@ import { fileURLToPath } from "node:url";
 const fixture = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(fixture, "../..");
 const output = join(fixture, ".build-native");
-const core = process.env.MGM_JS_DIR && resolve(process.env.MGM_JS_DIR);
+// CI verifies the package graph installed by the wrapper's lockfile. A local
+// candidate override remains useful before publishing a core change.
+const core = process.env.MGM_JS_DIR
+  ? resolve(process.env.MGM_JS_DIR)
+  : join(repository, "node_modules/@mostly-good-metrics/javascript");
 const sdk =
   process.env.ANDROID_HOME ||
   process.env.ANDROID_SDK_ROOT ||
@@ -54,12 +58,16 @@ const failPattern =
   /MGM_RN_FAIL|MGM_RN_HOST_ERROR|Possible Unhandled Promise Rejection|Unhandled promise rejection|FATAL EXCEPTION|Fatal signal/i;
 
 try {
-  if (!core || !existsSync(join(core, "dist/cjs/index.js")))
+  if (!existsSync(join(core, "dist/cjs/index.js")))
     throw new Error(
-      "MGM_JS_DIR must point to the built fixed JS core checkout",
+      "Install wrapper dependencies with npm ci, or point MGM_JS_DIR to a built candidate core checkout",
     );
   if (!existsSync(join(repository, "lib/commonjs/index.js")))
     throw new Error("Build candidate RN first with npm run prepare");
+  const corePackage = JSON.parse(readFileSync(join(core, "package.json")));
+  console.log(
+    `JavaScript core ${corePackage.version}: ${process.env.MGM_JS_DIR ? "local candidate override" : "SDK-installed dependency"}`,
+  );
   const fixturePackage = JSON.parse(
     readFileSync(join(fixture, "node_modules/react-native/package.json")),
   );

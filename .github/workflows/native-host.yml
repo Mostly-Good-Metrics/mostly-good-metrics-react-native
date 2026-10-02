@@ -19,12 +19,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      # Pin the reviewed unpublished fix until the core release and wrapper floor advance.
-      - uses: actions/checkout@v4
-        with:
-          repository: Mostly-Good-Metrics/mostly-good-metrics-js
-          ref: 4e786a51ff53e2422f9caa0b2a3fbfb90d3404b4
-          path: .native-host-core
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -32,7 +26,6 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             tests/native-host/package-lock.json
-            .native-host-core/package-lock.json
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -44,11 +37,8 @@ jobs:
           npm test -- --runInBand
           npm run typescript
           npm run prepare
-      - name: Build fixed core and install locked native fixture
-        run: |
-          npm ci --prefix .native-host-core
-          npm run build --prefix .native-host-core
-          npm ci --ignore-scripts --prefix tests/native-host
+      - name: Install locked native fixture
+        run: npm ci --ignore-scripts --prefix tests/native-host
       - name: Install pinned Android build platform
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"'
       - name: Enable emulator acceleration
@@ -58,8 +48,6 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Optimized Hermes native storage and lifecycle regression
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
-        env:
-          MGM_JS_DIR: ${{ github.workspace }}/.native-host-core
         with:
           api-level: 35
           arch: x86_64
