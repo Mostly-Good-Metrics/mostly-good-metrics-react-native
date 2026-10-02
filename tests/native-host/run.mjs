@@ -43,22 +43,26 @@ function command(
     timeout = 180000,
     allowFailure = false,
     acceptEmptyExitCodeOne = false,
+    maxBuffer = 20 * 1024 * 1024,
+    filterLogOutput = (text) => text,
   } = {},
 ) {
   const result = spawnSync(binary, args, {
     cwd,
     timeout,
-    maxBuffer: 20 * 1024 * 1024,
+    maxBuffer,
     encoding: "utf8",
     env: process.env,
   });
   const stdout = result.stdout || "";
   const stderr = result.stderr || "";
   const text = stdout + stderr;
+  const loggedStdout = filterLogOutput(stdout, "stdout");
+  const loggedStderr = filterLogOutput(stderr, "stderr");
   if (log) {
     // Preserve partial output and the actual transport/exit result before any
     // assertion throws. Every caller-supplied log path is inside our fixture.
-    writeFileSync(join(output, log), text);
+    writeFileSync(join(output, log), loggedStdout + loggedStderr);
     writeFileSync(
       join(output, `${log}.command.log`),
       JSON.stringify(
@@ -69,8 +73,8 @@ function command(
           error: result.error
             ? { message: result.error.message, code: result.error.code }
             : null,
-          stdout,
-          stderr,
+          stdout: loggedStdout,
+          stderr: loggedStderr,
         },
         null,
         2,
@@ -85,7 +89,7 @@ function command(
       !stderr.trim());
   if (!allowFailure && (result.error || !acceptedExit))
     throw new Error(
-      `${binary} failed (${result.status}): ${result.error || text.slice(-6000)}`,
+      `${binary} failed (${result.status}): ${result.error || (loggedStdout + loggedStderr).slice(-6000)}`,
     );
   return text.trim();
 }
@@ -240,7 +244,24 @@ try {
     }
     if (!/^\d+$/.test(pid))
       throw new Error(`Fixture did not start with one host process: ${pid}`);
-    return { pid, since, evidencePrefix };
+    const host = { pid, since, evidencePrefix, ...fixtureIdentity };
+    let process;
+    try {
+      process = readExpectedProcess(host);
+    } catch (error) {
+      try {
+        await collectHostDiagnostics(host);
+      } catch {
+        // Diagnostic failures must never replace the original startup failure.
+      }
+      throw error;
+    }
+    const boundHost = { ...host, startTime: process.startTime };
+    writeFileSync(
+      join(output, `${evidencePrefix}-bound-process.log`),
+      JSON.stringify(boundHost, null, 2),
+    );
+    return boundHost;
   };
   const readPid = (evidencePrefix) => {
     const pid = device(["shell", "pidof", appId], {
@@ -251,19 +272,161 @@ try {
       throw new Error(`Invalid fixture PID query output: ${pid}`);
     return pid;
   };
-  const collectHostDiagnostics = (host) => {
-    for (const [name, args] of [
-      [
-        `${host.evidencePrefix}-exit-info.log`,
-        ["shell", "dumpsys", "activity", "exit-info", appId],
-      ],
-      [
-        `${host.evidencePrefix}-crash.log`,
-        ["logcat", "-d", "-b", "crash", `--pid=${host.pid}`, "-T", host.since],
-      ],
-    ]) {
+  const processErrorEvidence = (text) =>
+    text
+      .split("\n")
+      .filter((line) =>
+        /^(?:adb:|error:|transport error:|cat: \/proc\/\d+\/(?:stat|status|cmdline):)/.test(
+          line,
+        ),
+      )
+      .join("\n");
+  const parseProcessStat = (host, text) => {
+    const closing = text.lastIndexOf(")");
+    const pid = text.slice(0, text.indexOf(" "));
+    const fields = text
+      .slice(closing + 2)
+      .trim()
+      .split(/\s+/);
+    const state = fields[0];
+    const startTime = fields[19]; // /proc/stat field 22; retain decimal precision.
+    if (
+      closing < 0 ||
+      pid !== host.pid ||
+      !/^[RSDTtZXxIWKP]$/.test(state) ||
+      !/^\d+$/.test(startTime)
+    )
+      throw new Error(`Invalid expected PID stat: ${host.pid}`);
+    return { pid, state, startTime };
+  };
+  const readProcessStat = (host) => {
+    const text = device(["shell", "cat", `/proc/${host.pid}/stat`], {
+      maxBuffer: 16 * 1024,
+      log: `${host.evidencePrefix}-process-stat.log`,
+      filterLogOutput: (text, stream) => {
+        if (stream === "stderr") return processErrorEvidence(text);
+        try {
+          return JSON.stringify(parseProcessStat(host, text));
+        } catch {
+          return "Invalid expected PID stat";
+        }
+      },
+    });
+    const process = parseProcessStat(host, text);
+    if (/^[ZXx]$/.test(process.state))
+      throw new Error(`Host process is dead: ${host.pid} (${process.state})`);
+    if (host.startTime !== undefined && process.startTime !== host.startTime)
+      throw new Error(`Host PID was reused: ${host.pid}`);
+    return process;
+  };
+  const parseProcessStatus = (text) => {
+    const field = (name) => {
+      const matches = [
+        ...text.matchAll(new RegExp(`^${name}:\\s*(.*)$`, "gm")),
+      ];
+      if (matches.length !== 1) throw new Error("Invalid expected PID status");
+      return matches[0][1].trim();
+    };
+    const pid = field("Pid");
+    const tgid = field("Tgid");
+    const state = field("State").match(/^([RSDTtZXxIWKP])(?:\s|$)/)?.[1];
+    const uids = field("Uid").split(/\s+/);
+    if (
+      !/^\d+$/.test(pid) ||
+      !/^\d+$/.test(tgid) ||
+      !state ||
+      uids.length !== 4 ||
+      !uids.every((uid) => /^\d+$/.test(uid))
+    )
+      throw new Error("Invalid expected PID status");
+    return { pid, tgid, state, uids };
+  };
+  const statusEvidence = (host, text, stream) => {
+    if (stream === "stderr") return processErrorEvidence(text);
+    try {
+      const { pid, tgid, state, uids } = parseProcessStatus(text);
+      const fixtureUIDMatches = uids.every((uid) => uid === host.uid);
+      return JSON.stringify({
+        pid,
+        tgid,
+        state,
+        fixtureUIDMatches,
+        ...(fixtureUIDMatches ? { uid: host.uid } : {}),
+      });
+    } catch {
+      return "Invalid expected PID status";
+    }
+  };
+  const commandlineEvidence = (text, stream) => {
+    if (stream === "stderr") return processErrorEvidence(text);
+    const argv0 = text.split("\0")[0];
+    return JSON.stringify({
+      classification: !argv0
+        ? "empty"
+        : argv0 === appId
+          ? "fixture"
+          : ["zygote", "zygote32", "zygote64", "usap32", "usap64"].includes(
+                argv0,
+              )
+            ? "android-startup"
+            : "other",
+      byteLength: Buffer.byteLength(text, "utf8"),
+    });
+  };
+  const readExpectedProcess = (host) => {
+    const before = readProcessStat(host);
+    const text = device(["shell", "cat", `/proc/${host.pid}/status`], {
+      maxBuffer: 16 * 1024,
+      log: `${host.evidencePrefix}-process-status.log`,
+      filterLogOutput: (text, stream) => statusEvidence(host, text, stream),
+    });
+    const status = parseProcessStatus(text);
+    if (status.pid !== host.pid || status.tgid !== host.pid)
+      throw new Error(`Host PID status changed: ${host.pid}`);
+    if (/^[ZXx]$/.test(status.state))
+      throw new Error(`Host process is dead: ${host.pid} (${status.state})`);
+    if (
+      !/^\d+$/.test(host.uid ?? "") ||
+      !status.uids.every((uid) => uid === host.uid)
+    )
+      throw new Error(`Host UID ownership changed: ${host.pid}`);
+    // UID is kernel ownership; argv0 and thread names are mutable. Detect PID
+    // reuse during these separate reads, including a process with the same UID.
+    return readProcessStat({
+      ...host,
+      startTime: host.startTime ?? before.startTime,
+    });
+  };
+  const fixtureSystemRecords = (host, text, stream = "stdout") => {
+    const packageName = appId.split(".").join("\\.");
+    const ownPackage = new RegExp(
+      String.raw`(?:^|[^\w.])${packageName}(?:$|[^\w.])`,
+    );
+    // A bare numeric match could expose another app's memory usage or UID.
+    const ownPid = new RegExp(
+      String.raw`\b(?:pid\s*[=:]?\s*|process\s+|Killing\s+|Kill\s+)${host.pid}(?=\D|$)`,
+      "i",
+    );
+    return text
+      .split("\n")
+      .filter(
+        (line) =>
+          ownPackage.test(line) ||
+          ownPid.test(line) ||
+          (stream === "stderr" &&
+            /^(?:adb:|error:|logcat:|transport error:)/.test(line)),
+      )
+      .join("\n");
+  };
+  const collectHostDiagnostics = async (host) => {
+    const diagnostic = (name, args, options = {}) => {
       try {
-        device(args, { allowFailure: true, log: name });
+        return device(args, {
+          allowFailure: true,
+          log: name,
+          maxBuffer: 1024 * 1024,
+          ...options,
+        });
       } catch (error) {
         try {
           writeFileSync(
@@ -273,23 +436,95 @@ try {
         } catch {
           // A best-effort diagnostic must never replace the original failure.
         }
+        return "";
       }
-    }
+    };
+    diagnostic(
+      `${host.evidencePrefix}-pid-identity.log`,
+      ["shell", "cat", `/proc/${host.pid}/cmdline`],
+      {
+        maxBuffer: 16 * 1024,
+        filterLogOutput: commandlineEvidence,
+      },
+    );
+    // UID values and unrelated names are never persisted for a foreign process.
+    diagnostic(
+      `${host.evidencePrefix}-pid-status.log`,
+      ["shell", "cat", `/proc/${host.pid}/status`],
+      {
+        maxBuffer: 16 * 1024,
+        filterLogOutput: (text, stream) => statusEvidence(host, text, stream),
+      },
+    );
+    diagnostic(`${host.evidencePrefix}-exit-info.log`, [
+      "shell",
+      "dumpsys",
+      "activity",
+      "exit-info",
+      appId,
+    ]);
+    diagnostic(`${host.evidencePrefix}-crash.log`, [
+      "logcat",
+      "-d",
+      "-b",
+      "crash",
+      `--pid=${host.pid}`,
+      "-T",
+      host.since,
+    ]);
+    diagnostic(
+      `${host.evidencePrefix}-system-records.log`,
+      [
+        "logcat",
+        "-d",
+        "-b",
+        "main",
+        "-b",
+        "system",
+        "-T",
+        host.since,
+        "ActivityManager:I",
+        "ActivityTaskManager:I",
+        "lmkd:I",
+        "lowmemorykiller:I",
+        "Zygote:I",
+        "*:S",
+      ],
+      {
+        filterLogOutput: (text, stream) =>
+          fixtureSystemRecords(host, text, stream),
+      },
+    );
+    // Exit-info registration may lag early process death. This samples only
+    // diagnostics; it never retries the workload, PID check or fatal assertion.
+    await sleep(1000);
+    diagnostic(`${host.evidencePrefix}-delayed-exit-info.log`, [
+      "shell",
+      "dumpsys",
+      "activity",
+      "exit-info",
+      appId,
+    ]);
   };
-  const readHostLog = (host, filename) => {
+  const readHostLog = async (host, filename) => {
     try {
-      const current = readPid(host.evidencePrefix);
+      if (!/^\d+$/.test(host.startTime ?? ""))
+        throw new Error("Unbound expected host PID start time");
+      readExpectedProcess(host);
       const text = device(
         ["logcat", "-d", `--pid=${host.pid}`, "-T", host.since],
         { log: filename },
       );
-      if (current !== host.pid)
-        throw new Error(
-          `Host died or restarted: expected PID ${host.pid}, got ${current}`,
-        );
+      // The observed Android pidof lookup can return empty for a still-running
+      // process. Verify the already-bound kernel process; never select a new PID.
+      readExpectedProcess(host);
       return text;
     } catch (error) {
-      collectHostDiagnostics(host);
+      try {
+        await collectHostDiagnostics(host);
+      } catch {
+        // Keep the original monitoring failure even if delayed diagnostics fail.
+      }
       throw error;
     }
   };
@@ -299,8 +534,61 @@ try {
         `Native host error: ${text.match(/^.*(?:MGM_RN_FAIL|MGM_RN_HOST_ERROR|Unhandled|FATAL EXCEPTION|Fatal signal).*$/im)?.[0]}`,
       );
   };
+  const resolveFixtureIdentity = () => {
+    const user = device(["shell", "am", "get-current-user"], {
+      log: "fixture-current-user.log",
+      maxBuffer: 16 * 1024,
+    });
+    if (!/^(0|[1-9]\d*)$/.test(user) || !Number.isSafeInteger(Number(user)))
+      throw new Error("Invalid current Android user");
+    const text = device(
+      [
+        "shell",
+        "cmd",
+        "package",
+        "list",
+        "packages",
+        "-U",
+        "--user",
+        user,
+        appId,
+      ],
+      {
+        log: "fixture-package-uid.log",
+        maxBuffer: 16 * 1024,
+        filterLogOutput: (text, stream) =>
+          stream === "stderr"
+            ? processErrorEvidence(text)
+            : text
+                .split("\n")
+                .filter((line) => line.startsWith(`package:${appId} uid:`))
+                .join("\n"),
+      },
+    );
+    const matches = text
+      .split("\n")
+      .filter((line) => line.startsWith(`package:${appId} uid:`));
+    const uid =
+      matches.length === 1
+        ? matches[0].slice(`package:${appId} uid:`.length)
+        : "";
+    const numericUID = Number(uid);
+    if (
+      !/^\d+$/.test(uid) ||
+      !Number.isSafeInteger(numericUID) ||
+      numericUID > 2147483647 ||
+      Math.floor(numericUID / 100000) !== Number(user) ||
+      numericUID % 100000 < 10000 ||
+      numericUID % 100000 >= 20000
+    )
+      throw new Error(
+        "Cannot resolve unique fixture package UID for current user",
+      );
+    return { user, uid };
+  };
   // Repeat the full workload with the same built APK. These are independent
   // launch pairs, never retries: any failure terminates the run immediately.
+  const fixtureIdentity = resolveFixtureIdentity();
   const launchResults = [];
   for (let pair = 1; pair <= 5; pair++) {
     const phase = `launch-${pair}`;
@@ -310,7 +598,7 @@ try {
     let rejectionDetectorVerified = false;
     const probeDeadline = Date.now() + 15000;
     while (Date.now() < probeDeadline) {
-      const text = readHostLog(probe, `${phase}-rejection-probe.log`);
+      const text = await readHostLog(probe, `${phase}-rejection-probe.log`);
       try {
         assertNoHostError(text);
       } catch (error) {
@@ -336,15 +624,15 @@ try {
     if (host.pid === probe.pid)
       throw new Error(`Launch pair reused the negative process: ${host.pid}`);
     const { pid } = host;
-    const readLog = () => {
-      const text = readHostLog(host, `${phase}-positive.log`);
+    const readLog = async () => {
+      const text = await readHostLog(host, `${phase}-positive.log`);
       assertNoHostError(text);
       return text;
     };
     const waitFor = async (marker) => {
       const deadline = Date.now() + 60000;
       while (Date.now() < deadline) {
-        const text = readLog();
+        const text = await readLog();
         if (text.includes(marker)) return text;
         await sleep(250);
       }
@@ -374,7 +662,7 @@ try {
         `Incomplete native smoke result: ${JSON.stringify(result)}`,
       );
     await sleep(2500);
-    readLog(); // Cover the rejection tracker's two-second grace after success.
+    await readLog(); // Cover the rejection tracker's two-second grace after success.
     const database = spawnSync(
       adb,
       ["-s", serial, "exec-out", "run-as", appId, "cat", "databases/RKStorage"],
@@ -400,7 +688,11 @@ try {
       phase,
       rejectionDetectorVerified,
       negativePid: probe.pid,
+      negativeStartTime: probe.startTime,
+      user: host.user,
+      uid: host.uid,
       pid,
+      startTime: host.startTime,
       abi,
       reactNative: "0.73.11",
       asyncStorage: "1.24.0",
