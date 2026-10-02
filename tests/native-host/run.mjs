@@ -244,7 +244,24 @@ try {
     }
     if (!/^\d+$/.test(pid))
       throw new Error(`Fixture did not start with one host process: ${pid}`);
-    return { pid, since, evidencePrefix };
+    const host = { pid, since, evidencePrefix };
+    let process;
+    try {
+      process = readExpectedProcess(host);
+    } catch (error) {
+      try {
+        await collectHostDiagnostics(host);
+      } catch {
+        // Diagnostic failures must never replace the original startup failure.
+      }
+      throw error;
+    }
+    const boundHost = { ...host, startTime: process.startTime };
+    writeFileSync(
+      join(output, `${evidencePrefix}-bound-process.log`),
+      JSON.stringify(boundHost, null, 2),
+    );
+    return boundHost;
   };
   const readPid = (evidencePrefix) => {
     const pid = device(["shell", "pidof", appId], {
@@ -254,6 +271,65 @@ try {
     if (pid && !/^\d+$/.test(pid))
       throw new Error(`Invalid fixture PID query output: ${pid}`);
     return pid;
+  };
+  const parseProcessStat = (host, text) => {
+    const closing = text.lastIndexOf(")");
+    const pid = text.slice(0, text.indexOf(" "));
+    const fields = text
+      .slice(closing + 2)
+      .trim()
+      .split(/\s+/);
+    const state = fields[0];
+    const startTime = fields[19]; // /proc/stat field 22; retain decimal precision.
+    if (
+      closing < 0 ||
+      pid !== host.pid ||
+      !/^[RSDTtZXxIWKP]$/.test(state) ||
+      !/^\d+$/.test(startTime)
+    )
+      throw new Error(`Invalid expected PID stat: ${host.pid}`);
+    return { pid, state, startTime };
+  };
+  const readProcessStat = (host) => {
+    const text = device(["shell", "cat", `/proc/${host.pid}/stat`], {
+      maxBuffer: 16 * 1024,
+      log: `${host.evidencePrefix}-process-stat.log`,
+      filterLogOutput: (text, stream) => {
+        if (stream === "stderr") return text;
+        try {
+          return JSON.stringify(parseProcessStat(host, text));
+        } catch {
+          return "Invalid expected PID stat";
+        }
+      },
+    });
+    const process = parseProcessStat(host, text);
+    if (/^[ZXx]$/.test(process.state))
+      throw new Error(`Host process is dead: ${host.pid} (${process.state})`);
+    if (host.startTime !== undefined && process.startTime !== host.startTime)
+      throw new Error(`Host PID was reused: ${host.pid}`);
+    return process;
+  };
+  const readExpectedProcess = (host) => {
+    const before = readProcessStat(host);
+    const identity = device(["shell", "cat", `/proc/${host.pid}/cmdline`], {
+      maxBuffer: 16 * 1024,
+      log: `${host.evidencePrefix}-process-identity.log`,
+      filterLogOutput: (text, stream) =>
+        stream === "stderr"
+          ? text
+          : text.split("\0")[0] === appId
+            ? appId
+            : "Expected PID identity does not match fixture",
+    });
+    if (identity.split("\0")[0] !== appId)
+      throw new Error(`Host PID identity changed: ${host.pid}`);
+    // Detect reuse during the separate stat/identity reads, including a new
+    // process using the same package name. Initial launch binds this snapshot.
+    return readProcessStat({
+      ...host,
+      startTime: host.startTime ?? before.startTime,
+    });
   };
   const fixtureSystemRecords = (host, text, stream = "stdout") => {
     const packageName = appId.split(".").join("\\.");
@@ -386,15 +462,16 @@ try {
   };
   const readHostLog = async (host, filename) => {
     try {
-      const current = readPid(host.evidencePrefix);
+      if (!/^\d+$/.test(host.startTime ?? ""))
+        throw new Error("Unbound expected host PID start time");
+      readExpectedProcess(host);
       const text = device(
         ["logcat", "-d", `--pid=${host.pid}`, "-T", host.since],
         { log: filename },
       );
-      if (current !== host.pid)
-        throw new Error(
-          `Host died or restarted: expected PID ${host.pid}, got ${current}`,
-        );
+      // The observed Android pidof lookup can return empty for a still-running
+      // process. Verify the already-bound kernel process; never select a new PID.
+      readExpectedProcess(host);
       return text;
     } catch (error) {
       try {
@@ -512,7 +589,9 @@ try {
       phase,
       rejectionDetectorVerified,
       negativePid: probe.pid,
+      negativeStartTime: probe.startTime,
       pid,
+      startTime: host.startTime,
       abi,
       reactNative: "0.73.11",
       asyncStorage: "1.24.0",

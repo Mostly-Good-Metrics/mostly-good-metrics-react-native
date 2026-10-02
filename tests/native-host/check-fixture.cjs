@@ -30,7 +30,7 @@ async function check(fault) {
     launches = [],
     sleeps = [],
     sqlite = 0,
-    pidReads = 0;
+    statReads = 0;
   const files = new Map();
   const sandbox = {
     appId: "com.mgm.rnhermeshost",
@@ -85,7 +85,7 @@ async function check(fault) {
           launches.push({ phase, mode, pid: currentPid });
           background = false;
           resumed = false;
-          pidReads = 0;
+          statReads = 0;
         } else {
           assert.equal(mode, "positive");
           assert.ok(background);
@@ -93,18 +93,21 @@ async function check(fault) {
         }
         return "";
       }
-      if (args.includes("pidof")) {
-        pidReads++;
-        if (
-          fault === "death" &&
-          phase === 3 &&
-          mode === "positive" &&
-          pidReads > 1
-        )
-          return "";
-        return currentPid;
+      if (args.includes("pidof")) return currentPid;
+      if (args.some((arg) => arg.endsWith("/stat"))) {
+        statReads++;
+        const dead =
+          fault === "initial-death" ||
+          (fault === "death" &&
+            phase === 3 &&
+            mode === "positive" &&
+            statReads > 2);
+        return `${currentPid} (gm.rnhermeshost) ${dead ? "Z" : "R"} ${Array(18).fill("0").join(" ")} 100 0`;
       }
+      if (args.some((arg) => arg.endsWith("/cmdline")))
+        return "com.mgm.rnhermeshost\0";
       if (args[0] === "logcat") {
+        if (args.includes("ActivityManager:I")) return "";
         assert.ok(args.includes("--pid=" + currentPid));
         if (mode === "negative") {
           if (fault === "sentinel" && phase === 2)
@@ -144,6 +147,20 @@ async function check(fault) {
       assert.ok(files.has(`launch-${i}-positive.log`));
       assert.ok(files.has(`launch-${i}-rejection-probe.log`));
       assert.ok(files.has(`launch-${i}-native-storage.sqlite`));
+      assert.equal(summary.launches[i - 1].startTime, "100");
+      assert.equal(summary.launches[i - 1].negativeStartTime, "100");
+      for (const mode of ["negative", "positive"]) {
+        const binding = JSON.parse(
+          files.get(`launch-${i}-${mode}-bound-process.log`),
+        );
+        assert.equal(binding.startTime, "100");
+        assert.equal(
+          binding.pid,
+          mode === "negative"
+            ? summary.launches[i - 1].negativePid
+            : summary.launches[i - 1].pid,
+        );
+      }
       assert.notEqual(
         summary.launches[i - 1].negativePid,
         summary.launches[i - 1].pid,
@@ -151,7 +168,8 @@ async function check(fault) {
     }
   } else {
     const expected = {
-      death: /Host died or restarted/,
+      death: /Host process is dead/,
+      "initial-death": /Host process is dead/,
       fatal: /Native host error/,
       sentinel: /Native host error/,
       sqlite: /synthetic sqlite failure/,
@@ -161,10 +179,21 @@ async function check(fault) {
       !files.has("result.json"),
       "failed runs must not write an all-pairs success result",
     );
-    const stoppedPhase = { death: 3, fatal: 4, sentinel: 2, sqlite: 2 }[fault];
+    const stoppedPhase = {
+      death: 3,
+      "initial-death": 1,
+      fatal: 4,
+      sentinel: 2,
+      sqlite: 2,
+    }[fault];
     assert.equal(phase, stoppedPhase, "a failed phase was retried or skipped");
     if (fault === "death")
       assert.ok(files.has("launch-3-positive-delayed-exit-info.log"));
+    if (fault === "initial-death") {
+      assert.ok(files.has("launch-1-negative-delayed-exit-info.log"));
+      assert.ok(!files.has("launch-1-negative-bound-process.log"));
+      assert.equal(launches.length, 1);
+    }
   }
 }
 async function checkCalibrationIsolation() {
@@ -265,6 +294,7 @@ async function checkScopedDiagnostics() {
     "\n({ readHostLog, readPid, assertNoHostError, fixtureSystemRecords, collectHostDiagnostics });";
   const host = {
     pid: "4102",
+    startTime: "900719925474099312345",
     since: "10-02 16:00:00.000",
     evidencePrefix: "phase",
   };
@@ -288,10 +318,21 @@ async function checkScopedDiagnostics() {
     "reuse",
     "status-reuse",
     "system-error",
+    "dead-X",
+    "dead-x",
+    "malformed",
+    "missing",
+    "stat255",
+    "identity-missing",
+    "identity255",
+    "clock-reuse",
+    "mid-identity-reuse",
+    "post-log-reuse",
   ]) {
     const files = new Map(),
       calls = [],
       sleeps = [];
+    let statReads = 0;
     const context = {
       appId: "com.mgm.rnhermeshost",
       adb: "/fake/adb",
@@ -336,10 +377,52 @@ async function checkScopedDiagnostics() {
               stdout: "",
               stderr: "error: query failed",
             });
+        } else if (args.some((arg) => arg.endsWith("/stat"))) {
+          assert.equal(options.maxBuffer, 16 * 1024);
+          statReads++;
+          const state = ["diagfail", "status-reuse", "system-error"].includes(
+            fault,
+          )
+            ? "Z"
+            : fault === "dead-X"
+              ? "X"
+              : fault === "dead-x"
+                ? "x"
+                : "R";
+          const reused =
+            fault === "clock-reuse" ||
+            (fault === "mid-identity-reuse" && statReads >= 2) ||
+            (fault === "post-log-reuse" && statReads >= 3);
+          result.stdout = `4102 (gm.rnhermeshost) ${state} ${Array(18).fill("0").join(" ")} ${reused ? "900719925474099312346" : host.startTime} 0`;
+          if (fault === "malformed") result.stdout = "4102 (other) ? 0";
+          if (fault === "missing")
+            Object.assign(result, {
+              status: 1,
+              stdout: "",
+              stderr: "cat: /proc/4102/stat: No such file or directory",
+            });
+          if (fault === "stat255")
+            Object.assign(result, {
+              status: 255,
+              stdout: "partial stat",
+              stderr: "adb: device offline",
+            });
         } else if (args.some((arg) => arg.endsWith("/cmdline"))) {
           assert.equal(options.maxBuffer, 16 * 1024);
           result.stdout =
             (fault === "reuse" ? "com.other" : "com.mgm.rnhermeshost") + "\0";
+          if (fault === "identity-missing")
+            Object.assign(result, {
+              status: 1,
+              stdout: "",
+              stderr: "cat: /proc/4102/cmdline: No such file or directory",
+            });
+          if (fault === "identity255")
+            Object.assign(result, {
+              status: 255,
+              stdout: "",
+              stderr: "adb: device offline",
+            });
         } else if (args.some((arg) => arg.endsWith("/status"))) {
           assert.equal(options.maxBuffer, 16 * 1024);
           result.stdout = `Name:\t${fault === "status-reuse" ? "other" : "gm.rnhermeshost"}\nState:\tZ (zombie)\nPid:\t4102\nThreads:\t2\nUid:\tsecret-other-uid\nVmRSS:\tsecret-other-memory`;
@@ -407,25 +490,52 @@ async function checkScopedDiagnostics() {
       api.assertNoHostError(text);
       return text;
     };
-    if (!fault) {
+    if (fault === "pid255" || fault === "pid1stderr") {
+      assert.throws(
+        () => api.readPid("query.log"),
+        fault === "pid255" ? /failed \(255\)/ : /failed \(1\)/,
+      );
+      assert.equal(calls.length, 1);
+      continue;
+    }
+    if (!fault || fault === "empty") {
+      if (fault === "empty")
+        assert.equal(api.readPid("empty-name-query.log"), "");
+      const discoveryCalls = calls.length;
       assert.match(await read(), /partial scoped/);
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length - discoveryCalls, 7);
+      assert.ok(
+        calls.slice(discoveryCalls).every((call) => !call.includes("pidof")),
+        "bound PID monitoring must not depend on a name lookup",
+      );
       continue;
     }
     const expected = {
-      empty: /Host died/,
-      pid255: /failed \(255\)/,
-      pid1stderr: /failed \(1\)/,
       log255: /failed \(255\)/,
       timeout: /read timed out/,
       fatal: /Native host error/,
-      diagfail: /Host died/,
-      reuse: /Host died/,
-      "status-reuse": /Host died/,
-      "system-error": /Host died/,
+      diagfail: /Host process is dead/,
+      reuse: /Host PID identity changed/,
+      "status-reuse": /Host process is dead/,
+      "system-error": /Host process is dead/,
+      "dead-X": /Host process is dead/,
+      "dead-x": /Host process is dead/,
+      malformed: /Invalid expected PID stat/,
+      missing: /failed \(1\)/,
+      stat255: /failed \(255\)/,
+      "identity-missing": /failed \(1\)/,
+      identity255: /failed \(255\)/,
+      "clock-reuse": /Host PID was reused/,
+      "mid-identity-reuse": /Host PID was reused/,
+      "post-log-reuse": /Host PID was reused/,
     }[fault];
     await assert.rejects(read(), expected);
     if (fault === "fatal") continue;
+    if (!["post-log-reuse", "log255", "timeout"].includes(fault))
+      assert.ok(
+        !files.has("positive.log"),
+        "invalid or dead expected process must not advance workload monitoring",
+      );
     assert.deepEqual(sleeps, [1000]);
     assert.equal(calls.filter((call) => call.includes("exit-info")).length, 2);
     assert.ok(files.has("phase-delayed-exit-info.log"));
@@ -463,14 +573,21 @@ async function checkScopedDiagnostics() {
     }
   }
   console.log(
-    "PASS scoped async diagnostics, transport errors, delayed exit info, PID reuse and adversarial record filtering",
+    "PASS bound live PID monitoring despite empty name query; dead/reused/invalid/transport controls, scoped async diagnostics and adversarial record filtering",
   );
 }
 
 (async () => {
   await checkCalibrationIsolation();
   await checkScopedDiagnostics();
-  for (const fault of [null, "death", "fatal", "sentinel", "sqlite"])
+  for (const fault of [
+    null,
+    "initial-death",
+    "death",
+    "fatal",
+    "sentinel",
+    "sqlite",
+  ])
     await check(fault);
   console.log(
     "PASS extracted five-pair runner mocks: ten fresh launches, per-pair lifecycle/SQLite/tail evidence, immediate stop on death/fatal/wrong sentinel/SQLite failure",
