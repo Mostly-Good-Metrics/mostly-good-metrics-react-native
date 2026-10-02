@@ -33,6 +33,38 @@ describe('AsyncStorageEventStorage', () => {
     storage = new AsyncStorageEventStorage();
   });
 
+
+  describe('damaged persisted queues', () => {
+    const valid = {
+      name: 'valid_event', client_event_id: 'valid-id', user_id: 'test-user',
+      timestamp: '2024-01-01T00:00:00Z', platform: 'ios' as const,
+      environment: 'test',
+    };
+
+    it.each([{}, null, 7, 'not-an-array'])('recovers from a non-array queue: %p', async (value) => {
+      mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(value));
+      await expect(storage.store(valid)).resolves.toBeUndefined();
+      await expect(storage.fetchEvents(10)).resolves.toEqual([valid]);
+    });
+
+    it('discards damaged entries while retaining valid events and allowing removal', async () => {
+      const value = [null, false, {}, { name: 'missing_timestamp' }, valid];
+      mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(value));
+      await expect(storage.fetchEvents(10)).resolves.toEqual([valid]);
+      await expect(storage.removeEvents(1, ['valid-id'])).resolves.toBeUndefined();
+      await expect(storage.eventCount()).resolves.toBe(0);
+    });
+  });
+
+  it.each([NaN, Infinity, -Infinity])('uses a bounded default for non-finite storage limits: %p', async (limit) => {
+    const events = Array.from({ length: 3000 }, (_, i) => ({ client_event_id: `id_${i}`, name: `stored_${i}`, timestamp: '2026-01-01T00:00:00Z', user_id: 'test', platform: 'ios' as const, environment: 'test' }));
+    mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(events));
+    const bounded = new AsyncStorageEventStorage(limit);
+    await bounded.store({ ...events[0]!, name: 'latest' });
+    expect((bounded as unknown as { maxEvents: number }).maxEvents).toBe(10000);
+    await expect(bounded.eventCount()).resolves.toBe(3001);
+  });
+
   describe('store', () => {
     it('stores an event', async () => {
       const event = {
@@ -377,5 +409,52 @@ describe('persistence', () => {
 
       expect(isFirst).toBe(false);
     });
+  });
+});
+
+describe('failed identity persistence', () => {
+  it.each([true, false])('serializes consent writes and honors the current choice while native storage is pending (latest fails: %p)', async (latestFails) => {
+    let finishOld!: () => void;
+    let nativeValue = 'false';
+    mockAsyncStorage.getItem.mockImplementation(async () => nativeValue);
+    mockAsyncStorage.setItem.mockImplementationOnce((_key: string, value: string) => new Promise<void>((resolve) => {
+      finishOld = () => { nativeValue = value; resolve(); };
+    }));
+    if (latestFails) mockAsyncStorage.setItem.mockRejectedValueOnce(new Error('newest write failed'));
+    else mockAsyncStorage.setItem.mockImplementationOnce(async (_key: string, value: string) => { nativeValue = value; });
+    const oldWrite = persistence.setOptOut(false);
+    await Promise.resolve();
+    const latestWrite = persistence.setOptOut(true);
+    try {
+      await expect(persistence.getOptOut()).resolves.toBe(true);
+      finishOld();
+      await Promise.all([oldWrite, latestWrite]);
+      await expect(persistence.getOptOut()).resolves.toBe(true);
+      expect(nativeValue).toBe(latestFails ? 'false' : 'true');
+    } finally {
+      await persistence.setOptOut(false);
+    }
+  });
+
+  it('retains the current identity when a native write fails but reads still return the old user', async () => {
+    mockAsyncStorage.getItem.mockResolvedValue('old-user');
+    mockAsyncStorage.setItem.mockRejectedValueOnce(new Error('native storage write failed'));
+    try {
+      await persistence.setUserId('new-user');
+      await expect(persistence.getUserId()).resolves.toBe('new-user');
+    } finally {
+      await persistence.setUserId(null);
+    }
+  });
+
+  it('does not restore the logged-out user when native removal fails', async () => {
+    mockAsyncStorage.getItem.mockResolvedValue('old-user');
+    mockAsyncStorage.removeItem.mockRejectedValueOnce(new Error('native storage removal failed'));
+    try {
+      await persistence.setUserId(null);
+      await expect(persistence.getUserId()).resolves.toBeNull();
+    } finally {
+      await persistence.setUserId(null);
+    }
   });
 });

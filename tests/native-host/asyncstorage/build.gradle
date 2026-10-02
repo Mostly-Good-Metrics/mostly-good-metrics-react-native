@@ -1,0 +1,21 @@
+plugins { id 'com.android.library' }
+def storageSources = new File(rootDir, '../node_modules/@react-native-async-storage/async-storage/android/src')
+android {
+ namespace 'com.reactnativecommunity.asyncstorage'
+ compileSdk 34
+ defaultConfig {
+  minSdk 21
+  buildConfigField 'Long', 'AsyncStorage_db_size', '6L'
+  buildConfigField 'boolean', 'AsyncStorage_useDedicatedExecutor', 'false'
+  buildConfigField 'boolean', 'IS_NEW_ARCHITECTURE_ENABLED', 'false'
+ }
+ buildFeatures { buildConfig true }
+ sourceSets {
+  main {
+   java.srcDirs = [new File(storageSources, 'main/java'), new File(storageSources, 'javaPackage/java'), new File(storageSources, 'oldarch/java')]
+   java.exclude '**/next/**'
+   manifest.srcFile new File(storageSources, 'main/AndroidManifest.xml')
+  }
+ }
+}
+dependencies { implementation 'com.facebook.react:react-android:0.73.11' }

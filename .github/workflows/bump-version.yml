@@ -40,6 +40,7 @@ jobs:
         if: inputs.js_version != ''
         run: |
           npm pkg set "dependencies.@mostly-good-metrics/javascript=^${{ inputs.js_version }}"
+          npm install --package-lock-only --ignore-scripts
           echo "Updated @mostly-good-metrics/javascript to ^${{ inputs.js_version }}"
 
       - name: Get current version and bump

@@ -1,3 +1,4 @@
+import { MAX_RETAINED_BYTES, ownedSnapshot } from './retention';
 import { AppState, Platform } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 import {
@@ -14,6 +15,7 @@ import {
   AsyncStorageEventStorage,
   AsyncStorageExperimentStorage,
   persistence,
+  invalidateEventStorage,
   getStorageType,
 } from './storage';
 
@@ -144,17 +146,33 @@ interface PrivacyCapableStatics {
 
 const PrivacyClient = MGMClient as unknown as PrivacyCapableStatics;
 
+function nativeAppState(): AppStateStatus | null {
+  try {
+    const current = AppState.currentState;
+    return typeof current === 'string' ? current : null;
+  } catch {
+    // Native state can be unavailable during startup. Unknown state should not
+    // fabricate a foreground/background transition or interrupt initialization.
+    return null;
+  }
+}
+
 // Use global to persist state across hot reloads
 const g = globalThis as typeof globalThis & {
   __MGM_RN_STATE__?: {
     appStateSubscription: { remove: () => void } | null;
     isConfigured: boolean;
-    currentAppState: AppStateStatus;
+    currentAppState: AppStateStatus | null;
     debugLogging: boolean;
     lastLifecycleEvent: { name: string; time: number } | null;
     clientReady: boolean;
-    pendingClientCalls: Array<() => void>;
+    pendingClientCalls: Array<(() => void) & { retainedBytes?: number }>;
+    pendingClientBytes: number;
+    eventStorage: AsyncStorageEventStorage | null;
     initPromise: Promise<void> | null;
+    initGeneration: number;
+    explicitConsent: boolean | null;
+    cancelledWaits: Set<() => void>;
     optedOut: boolean;
     collectDeviceProperties: boolean;
   };
@@ -165,12 +183,17 @@ if (!g.__MGM_RN_STATE__) {
   g.__MGM_RN_STATE__ = {
     appStateSubscription: null,
     isConfigured: false,
-    currentAppState: AppState.currentState,
+    currentAppState: nativeAppState(),
     debugLogging: false,
     lastLifecycleEvent: null,
     clientReady: false,
     pendingClientCalls: [],
+    pendingClientBytes: 0,
+    eventStorage: null,
     initPromise: null,
+    initGeneration: 0,
+    explicitConsent: null,
+    cancelledWaits: new Set(),
     optedOut: false,
     collectDeviceProperties: true,
   };
@@ -181,15 +204,109 @@ const state = g.__MGM_RN_STATE__;
 // Backfill fields that may be missing when hot-reloading over an older SDK version
 state.clientReady = state.clientReady ?? false;
 state.pendingClientCalls = state.pendingClientCalls ?? [];
+state.pendingClientBytes = state.pendingClientBytes ?? 0;
+state.eventStorage = state.eventStorage ?? null;
 state.initPromise = state.initPromise ?? null;
+state.initGeneration = state.initGeneration ?? 0;
+state.explicitConsent = state.explicitConsent ?? null;
+state.cancelledWaits = state.cancelledWaits ?? new Set();
 state.optedOut = state.optedOut ?? false;
 state.collectDeviceProperties = state.collectDeviceProperties ?? true;
 
 const DEDUPE_INTERVAL_MS = 1000; // Ignore duplicate events within 1 second
 
+const MAX_PENDING_CLIENT_CALLS = 10000;
+
+function normalizedTimeout(timeoutMs: number): number {
+  return Number.isFinite(timeoutMs) ? Math.min(2147483647, Math.max(0, timeoutMs)) : 5000;
+}
+
+async function waitForClient(timeoutMs = 5000): Promise<boolean> {
+  const generation = state.initGeneration;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancel: (() => void) | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve(state.initPromise),
+      new Promise<void>((resolve) => { cancel = resolve; state.cancelledWaits.add(resolve); }),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, normalizedTimeout(timeoutMs)); }),
+    ]);
+  } catch (error) {
+    log('Initialization wait error:', error);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (cancel) state.cancelledWaits.delete(cancel);
+  }
+  return generation === state.initGeneration && state.isConfigured && state.clientReady;
+}
+
+async function waitUntilReady(timeoutMs: number): Promise<void> {
+  const timeout = normalizedTimeout(timeoutMs);
+  const generation = state.initGeneration;
+  const started = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancel: (() => void) | undefined;
+  try {
+    await Promise.race([
+      new Promise<void>((resolve) => { cancel = resolve; state.cancelledWaits.add(resolve); }),
+      (async () => {
+        await state.initPromise;
+        if (generation !== state.initGeneration || !state.isConfigured || !state.clientReady) return;
+        await MGMClient.ready(Math.max(0, timeout - (Date.now() - started)));
+      })(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, timeout); }),
+    ]);
+  } catch (error) {
+    log('Readiness error:', error);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (cancel) state.cancelledWaits.delete(cancel);
+  }
+}
+
+function warn(...args: unknown[]): void {
+  try {
+    console.warn(...args);
+  } catch {
+    // Logging is best-effort, including unconfigured SDK warnings.
+  }
+}
+
+function snapshotProperties(properties?: EventProperties): EventProperties {
+  const snapshot: EventProperties = {};
+  let bytes = 0;
+  let keys = 0;
+  try {
+    for (const key in properties ?? {}) {
+      if (++keys > 1024) break;
+      if (!Object.prototype.hasOwnProperty.call(properties, key)) continue;
+      if (key.length > 255) continue;
+      try {
+        const owned = ownedSnapshot(properties![key]);
+        if (!owned || bytes + owned.bytes + key.length * 2 > 32 * 1024) continue;
+        bytes += owned.bytes + key.length * 2;
+        Object.defineProperty(snapshot, key, { value: owned.value, enumerable: true, configurable: true, writable: true });
+      } catch (e) { log('Unreadable event property:', e); }
+    }
+  } catch (e) { log('Unreadable event properties:', e); }
+  return snapshot;
+}
+
+function invokeClient(fn: () => void): void {
+  try {
+    fn();
+  } catch (e) {
+    log('Client call error:', e);
+  }
+}
+
 function log(...args: unknown[]) {
   if (state.debugLogging) {
-    console.log('[MostlyGoodMetrics]', ...args);
+    try {
+      console.log('[MostlyGoodMetrics]', ...args);
+    } catch {
+      // Host logging hooks must never interrupt analytics or error handling.
+    }
   }
 }
 
@@ -202,12 +319,30 @@ function log(...args: unknown[]) {
  * window where the wrapper is "configured" but the JS client does not exist
  * yet. Calls made in that window would otherwise be dropped silently.
  */
-function whenClientReady(fn: () => void): void {
+function removeAppStateSubscription(): void {
+  const subscription = state.appStateSubscription;
+  state.appStateSubscription = null;
+  if (!subscription) return;
+  try {
+    subscription.remove();
+  } catch (e) {
+    log('Listener cleanup error:', e);
+  }
+}
+
+function whenClientReady(fn: () => void, retainedBytes = 128): void {
   if (state.clientReady) {
-    fn();
+    invokeClient(fn);
     return;
   }
-  state.pendingClientCalls.push(fn);
+  if (retainedBytes > MAX_RETAINED_BYTES) return;
+  while (state.pendingClientCalls.length && (state.pendingClientCalls.length >= MAX_PENDING_CLIENT_CALLS || state.pendingClientBytes + retainedBytes > MAX_RETAINED_BYTES)) {
+    state.pendingClientBytes -= state.pendingClientCalls.shift()?.retainedBytes ?? 128;
+  }
+  const pending: (() => void) & { retainedBytes?: number } = () => invokeClient(fn);
+  pending.retainedBytes = retainedBytes;
+  state.pendingClientBytes += retainedBytes;
+  state.pendingClientCalls.push(pending);
 }
 
 /**
@@ -231,7 +366,7 @@ function trackLifecycleEvent(eventName: string, properties?: EventProperties) {
 
   state.lastLifecycleEvent = { name: eventName, time: now };
   log(`Tracking lifecycle event: ${eventName}`);
-  MGMClient.track(eventName, properties);
+  invokeClient(() => MGMClient.track(eventName, properties));
 }
 
 /**
@@ -243,15 +378,15 @@ function handleAppStateChange(nextAppState: AppStateStatus) {
   log(`AppState change: ${state.currentAppState} -> ${nextAppState}`);
 
   // App came to foreground
-  if (state.currentAppState.match(/inactive|background/) && nextAppState === 'active') {
+  if ((state.currentAppState === 'inactive' || state.currentAppState === 'background') && nextAppState === 'active') {
     trackLifecycleEvent(SystemEvents.APP_OPENED);
   }
 
   // App went to background
-  if (state.currentAppState === 'active' && nextAppState.match(/inactive|background/)) {
+  if (state.currentAppState === 'active' && (nextAppState === 'inactive' || nextAppState === 'background')) {
     trackLifecycleEvent(SystemEvents.APP_BACKGROUNDED);
     // Flush events when going to background
-    MGMClient.flush().catch((e) => log('Flush error:', e));
+    void Promise.resolve().then(() => MGMClient.flush()).catch((e) => log('Flush error:', e));
   }
 
   state.currentAppState = nextAppState;
@@ -262,9 +397,11 @@ function handleAppStateChange(nextAppState: AppStateStatus) {
  */
 async function trackInstallOrUpdate(appVersion?: string, existingInstallation = false) {
   if (!appVersion) return;
+  const generation = state.initGeneration;
 
   const previousVersion = await persistence.getAppVersion();
   const isFirst = await persistence.isFirstLaunch();
+  if (generation !== state.initGeneration || !state.isConfigured) return;
 
   if (isFirst) {
     if (!existingInstallation) {
@@ -305,18 +442,23 @@ const MostlyGoodMetrics = {
       log('Already configured, skipping');
       return;
     }
+    if (state.eventStorage) invalidateEventStorage(state.eventStorage);
+    state.eventStorage = null;
 
     state.debugLogging = config.enableDebugLogging ?? false;
     log('Configuring with options:', config);
 
     state.isConfigured = true;
     state.clientReady = false;
+    const generation = ++state.initGeneration;
+    state.explicitConsent = null;
     state.collectDeviceProperties = config.collectDeviceProperties ?? true;
     // Until the persisted choice is loaded, honor the configured default
     state.optedOut = config.optedOutByDefault ?? false;
 
     // Create AsyncStorage-based storage
     const storage = new AsyncStorageEventStorage(config.maxStoredEvents);
+    state.eventStorage = storage;
 
     // AsyncStorage-backed experiment storage: persists the experiments
     // variant cache and exposure dedup flags across app restarts. Wired at
@@ -332,16 +474,21 @@ const MostlyGoodMetrics = {
       // persisted anonymous ID and the stored user ID first guarantees the
       // client's initial experiments fetch uses a stable identity.
       const [anonymousId, storedUserId, storedOptOut] = await Promise.all([
-        persistence.getOrCreateAnonymousId(config.anonymousId, generateAnonymousId),
+        persistence.getOrCreateAnonymousId(config.anonymousId, () => {
+          if (generation !== state.initGeneration || !state.isConfigured) throw new Error('Configuration invalidated');
+          return generateAnonymousId();
+        }),
         persistence.getUserId(),
         persistence.getOptOut(),
       ]);
+      // destroy() invalidates work still waiting on native storage/plugins.
+      if (generation !== state.initGeneration || !state.isConfigured) return;
       log('Resolved anonymous ID:', anonymousId);
 
       // A persisted explicit optIn()/optOut() choice (stored in AsyncStorage,
       // since the JS SDK's cookie/localStorage persistence does not exist on
       // React Native) takes precedence over the configured default.
-      state.optedOut = storedOptOut ?? config.optedOutByDefault ?? false;
+      state.optedOut = state.explicitConsent ?? storedOptOut ?? config.optedOutByDefault ?? false;
       if (state.optedOut) {
         log('Tracking is disabled (opted out)');
       }
@@ -377,7 +524,11 @@ const MostlyGoodMetrics = {
       // Replay any calls queued while identity was being resolved
       state.clientReady = true;
       const pendingCalls = state.pendingClientCalls.splice(0);
-      pendingCalls.forEach((fn) => fn());
+      state.pendingClientBytes = 0;
+      pendingCalls.forEach((fn) => {
+        if (generation === state.initGeneration && state.isConfigured) fn();
+      });
+      if (generation !== state.initGeneration || !state.isConfigured) return;
 
       // Set up React Native lifecycle tracking
       if (config.trackAppLifecycleEvents !== false) {
@@ -385,23 +536,44 @@ const MostlyGoodMetrics = {
 
         // Remove any existing listener (in case of hot reload)
         if (state.appStateSubscription) {
-          state.appStateSubscription.remove();
+          removeAppStateSubscription();
           state.appStateSubscription = null;
         }
 
         // Track initial app open
         trackLifecycleEvent(SystemEvents.APP_OPENED);
+        if (generation !== state.initGeneration || !state.isConfigured) return;
 
         // Track install/update
         trackInstallOrUpdate(config.appVersion, config.existingInstallation).catch((e) =>
           log('Install/update tracking error:', e)
         );
 
-        // Subscribe to app state changes
-        state.appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
+        // Module import may happen while the Activity is backgrounded. Refresh
+        // from native state at subscription time so the first real background
+        // transition is recognized after async configuration finishes.
+        state.currentAppState = nativeAppState();
+        if (generation !== state.initGeneration || !state.isConfigured) return;
+        try {
+          const subscription = AppState.addEventListener('change', (nextAppState) => {
+            if (generation === state.initGeneration && state.isConfigured) handleAppStateChange(nextAppState);
+          });
+          if (generation !== state.initGeneration || !state.isConfigured) {
+            try { subscription.remove(); } catch (error) { log('Listener cleanup error:', error); }
+          } else {
+            state.appStateSubscription = subscription;
+          }
+        } catch (error) { log('Listener registration error:', error); }
       }
     })().catch((e) => {
       log('Configuration error:', e);
+      if (generation === state.initGeneration && !state.clientReady) {
+        state.isConfigured = false;
+        state.pendingClientCalls = [];
+        state.pendingClientBytes = 0;
+        for (const cancel of state.cancelledWaits) cancel();
+        state.cancelledWaits.clear();
+      }
     });
   },
 
@@ -409,8 +581,9 @@ const MostlyGoodMetrics = {
    * Track an event with optional properties.
    */
   track(name: string, properties?: EventProperties): void {
+    if (typeof name !== 'string' || name.length > 255) return;
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
@@ -425,10 +598,12 @@ const MostlyGoodMetrics = {
         ? { [SystemProperties.DEVICE_TYPE]: getDeviceType() }
         : {}),
       $storage_type: getStorageType(),
-      ...properties,
+      ...snapshotProperties(properties),
     };
 
-    whenClientReady(() => MGMClient.track(name, enrichedProperties));
+    const snapshot = ownedSnapshot({ name, properties: enrichedProperties });
+    if (!snapshot) return;
+    whenClientReady(() => MGMClient.track(snapshot.value.name, snapshot.value.properties), snapshot.bytes + 128);
   },
 
   /**
@@ -441,7 +616,7 @@ const MostlyGoodMetrics = {
    */
   identify(userId: string, profile?: UserProfile): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
@@ -451,9 +626,11 @@ const MostlyGoodMetrics = {
     }
 
     log('Identifying user:', userId, profile ? 'with profile' : '');
-    whenClientReady(() => MGMClient.identify(userId, profile));
+    const snapshot = ownedSnapshot({ userId, profile });
+    if (!snapshot || typeof userId !== 'string') return;
+    whenClientReady(() => MGMClient.identify(snapshot.value.userId, snapshot.value.profile), snapshot.bytes + 128);
     // Also persist to AsyncStorage for restoration
-    persistence.setUserId(userId).catch((e) => log('Failed to persist user ID:', e));
+    persistence.setUserId(snapshot.value.userId).catch((e) => log('Failed to persist user ID:', e));
   },
 
   /**
@@ -469,7 +646,10 @@ const MostlyGoodMetrics = {
   resetIdentity(options?: ResetIdentityOptions): void {
     if (!state.isConfigured) return;
 
-    log('Resetting identity', options ?? '');
+    const snapshot = ownedSnapshot(options ?? {});
+    if (!snapshot) return;
+    options = options === undefined ? undefined : snapshot.value;
+    log('Resetting identity', options);
     whenClientReady(() => {
       PrivacyClient.resetIdentity(options);
 
@@ -489,7 +669,7 @@ const MostlyGoodMetrics = {
           .clearLocalExperimentAssignments()
           .catch((e) => log('Failed to clear local experiment assignments:', e));
       }
-    });
+    }, snapshot.bytes + 128);
     persistence.setUserId(null).catch((e) => log('Failed to clear user ID:', e));
   },
 
@@ -501,22 +681,25 @@ const MostlyGoodMetrics = {
    */
   async resetAnonymousId(): Promise<string | null> {
     if (!state.isConfigured) return null;
-
-    await state.initPromise;
+    const generation = state.initGeneration;
+    if (!await waitForClient() || generation !== state.initGeneration) return null;
 
     if (typeof PrivacyClient.resetAnonymousId !== 'function') {
-      console.warn(
+      warn(
         '[MostlyGoodMetrics] resetAnonymousId requires a newer @mostly-good-metrics/javascript core.'
       );
       return null;
     }
 
-    const newAnonymousId = PrivacyClient.resetAnonymousId();
+    let newAnonymousId: string | null;
+    try { newAnonymousId = PrivacyClient.resetAnonymousId(); } catch (error) { log('Anonymous ID error:', error); return null; }
     if (newAnonymousId) {
       log('Anonymous ID reset');
       await persistence
         .setAnonymousId(newAnonymousId)
         .catch((e) => log('Failed to persist anonymous ID:', e));
+
+      if (generation !== state.initGeneration || !state.isConfigured) return null;
 
       // A rotated anonymous ID must be re-bucketed - clear sticky local
       // experiment assignments (the core clears them too; this also covers
@@ -537,12 +720,15 @@ const MostlyGoodMetrics = {
    */
   optOut(): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
     log('Opting out of tracking');
     state.optedOut = true;
+    state.explicitConsent = true;
+    state.pendingClientCalls = [];
+    state.pendingClientBytes = 0;
     persistence.setOptOut(true).catch((e) => log('Failed to persist opt-out:', e));
 
     whenClientReady(() => {
@@ -561,12 +747,13 @@ const MostlyGoodMetrics = {
    */
   optIn(): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
 
     log('Opting in to tracking');
     state.optedOut = false;
+    state.explicitConsent = false;
     persistence.setOptOut(false).catch((e) => log('Failed to persist opt-in:', e));
 
     whenClientReady(() => {
@@ -593,27 +780,13 @@ const MostlyGoodMetrics = {
    * SDK is not configured or tracking is opted out.
    */
   async flush(): Promise<void> {
-    if (!state.isConfigured) return;
-
-    if (state.optedOut) {
-      log('Tracking is opted out, skipping flush');
-      return;
-    }
-
-    log('Flushing events');
-    // Wait for identity resolution + JS client construction (and any calls
-    // queued during that window) to finish, then await the core flush so the
-    // returned promise only resolves after the events have been sent.
-    //
-    // The .catch is load-bearing: flush() must be safe both awaited AND
-    // fire-and-forget. A bare `flush()` (no await) on a rejecting core flush
-    // (e.g. offline device during a screen transition) would otherwise surface
-    // an unhandled promise rejection (RN red-box / Sentry noise). Swallowing to
-    // a log here means the returned promise always resolves once delivery
-    // settles — matching the pre-existing fire-and-forget behavior — while
-    // still letting callers `await flush()` to know the batch was sent.
-    await state.initPromise;
-    await MGMClient.flush().catch((e) => log('Flush error:', e));
+    if (!state.isConfigured || state.optedOut) return;
+    const generation = state.initGeneration;
+    if (!await waitForClient() || state.optedOut || generation !== state.initGeneration) return;
+    await Promise.resolve().then(() => {
+      if (generation === state.initGeneration && state.isConfigured && !state.optedOut) return MGMClient.flush();
+      return undefined;
+    }).catch((e) => log('Flush error:', e));
   },
 
   /**
@@ -641,7 +814,8 @@ const MostlyGoodMetrics = {
    */
   async getPendingEventCount(): Promise<number> {
     if (!state.isConfigured) return 0;
-    await state.initPromise;
+    const generation = state.initGeneration;
+    if (!await waitForClient() || generation !== state.initGeneration) return 0;
     return MGMClient.getPendingEventCount();
   },
 
@@ -652,11 +826,13 @@ const MostlyGoodMetrics = {
    */
   setSuperProperty(key: string, value: EventProperties[string]): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
     log('Setting super property:', key);
-    whenClientReady(() => MGMClient.setSuperProperty(key, value));
+    const snapshot = ownedSnapshot({ key, value });
+    if (!snapshot) return;
+    whenClientReady(() => MGMClient.setSuperProperty(snapshot.value.key, snapshot.value.value), snapshot.bytes + 128);
   },
 
   /**
@@ -664,11 +840,13 @@ const MostlyGoodMetrics = {
    */
   setSuperProperties(properties: EventProperties): void {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return;
     }
-    log('Setting super properties:', Object.keys(properties).join(', '));
-    whenClientReady(() => MGMClient.setSuperProperties(properties));
+    log('Setting super properties');
+    const snapshot = ownedSnapshot(properties);
+    if (!snapshot) return;
+    whenClientReady(() => MGMClient.setSuperProperties(snapshot.value), snapshot.bytes + 128);
   },
 
   /**
@@ -677,7 +855,9 @@ const MostlyGoodMetrics = {
   removeSuperProperty(key: string): void {
     if (!state.isConfigured) return;
     log('Removing super property:', key);
-    whenClientReady(() => MGMClient.removeSuperProperty(key));
+    const snapshot = ownedSnapshot(key);
+    if (!snapshot) return;
+    whenClientReady(() => MGMClient.removeSuperProperty(snapshot.value), snapshot.bytes + 128);
   },
 
   /**
@@ -693,8 +873,8 @@ const MostlyGoodMetrics = {
    * Get all current super properties.
    */
   getSuperProperties(): EventProperties {
-    if (!state.isConfigured) return {};
-    return MGMClient.getSuperProperties();
+    if (!state.isConfigured || !state.clientReady) return {};
+    try { return MGMClient.getSuperProperties(); } catch (error) { log('Super properties error:', error); return {}; }
   },
 
   // A/B Testing
@@ -718,11 +898,12 @@ const MostlyGoodMetrics = {
    */
   getVariant(experimentName: string, fallback: string | null = null): string | null {
     if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
+      warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
       return fallback;
     }
     log('Getting variant for experiment:', experimentName);
-    return MGMClient.getVariant(experimentName, fallback);
+    if (!state.clientReady) return fallback;
+    try { return MGMClient.getVariant(experimentName, fallback); } catch (error) { log('Variant error:', error); return fallback; }
   },
 
   /**
@@ -740,31 +921,31 @@ const MostlyGoodMetrics = {
    * @returns A promise that resolves when the SDK is ready or the timeout elapses
    */
   async ready(timeoutMs: number = 5000): Promise<void> {
-    if (!state.isConfigured) {
-      console.warn('[MostlyGoodMetrics] SDK not configured. Call configure() first.');
-      return;
-    }
-    log('Waiting for SDK to be ready');
-    // Wait for identity resolution + JS client construction first, so
-    // ready() never resolves before the client even exists.
-    await state.initPromise;
-    return MGMClient.ready(timeoutMs);
+    if (!state.isConfigured) return;
+    await waitUntilReady(timeoutMs);
   },
 
   /**
    * Clean up resources. Call when unmounting the app.
    */
   destroy(): void {
+    if (state.eventStorage) invalidateEventStorage(state.eventStorage);
+    state.eventStorage = null;
+    ++state.initGeneration;
+    for (const cancel of state.cancelledWaits) cancel();
+    state.cancelledWaits.clear();
     if (state.appStateSubscription) {
-      state.appStateSubscription.remove();
+      removeAppStateSubscription();
       state.appStateSubscription = null;
     }
-    MGMClient.reset();
+    invokeClient(() => MGMClient.reset());
     state.isConfigured = false;
     state.lastLifecycleEvent = null;
     state.clientReady = false;
     state.pendingClientCalls = [];
+    state.pendingClientBytes = 0;
     state.initPromise = null;
+    state.explicitConsent = null;
     state.optedOut = false;
     state.collectDeviceProperties = true;
     log('Destroyed');

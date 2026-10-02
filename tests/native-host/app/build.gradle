@@ -1,0 +1,7 @@
+plugins { id 'com.android.application' }
+android { namespace 'com.mgm.rnhermeshost'; compileSdk 34
+ defaultConfig { applicationId 'com.mgm.rnhermeshost'; minSdk 23; targetSdk 34; versionCode 1; versionName '1.0'; ndk { abiFilters (project.findProperty('mgmAbi') ?: 'x86_64') } }
+ buildFeatures { buildConfig true }
+ compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}
+dependencies { implementation 'com.facebook.react:react-android:0.73.11'; implementation 'com.facebook.react:hermes-android:0.73.11'; implementation project(':asyncstorage') }

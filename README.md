@@ -537,6 +537,36 @@ When `trackAppLifecycleEvents` is enabled (default: `true`), the SDK automatical
   - iOS: Always "Apple"
   - Android: From `Build.MANUFACTURER` (e.g., "Google", "Samsung")
 
+## Failure handling
+
+Native storage/device operations have a five-second deadline. Reads are coalesced;
+a timed-out native read uses memory for the rest of the process. Writes are
+coalesced to the latest value. A timed-out write cannot be cancelled, so that key
+also uses memory for the rest of the process rather than risking out-of-order
+durable writes. Failed identity/consent writes remain authoritative in memory.
+Unreadable or malformed native consent stays opted out until an explicit choice;
+a genuinely missing value uses the configured default for a new installation.
+
+`ready(timeoutMs)` covers native initialization and experiment readiness together.
+Before initialization, the SDK retains at most 10,000 calls and 1 MiB of owned
+payload snapshots, dropping oldest calls on overflow. The event adapter caps its
+combined cached and pending payloads at 1 MiB and drops new events that exceed its
+remaining budget. Oversized, cyclic, unreadable, or excessively complex values are
+discarded. Accepted data is copied so later app mutations cannot change queued
+events. Persisted queues larger than 1 MiB are discarded before parsing; smaller
+damaged queues recover valid entries. Count reads and pending clears are coalesced.
+
+Call `destroy()` when tearing down the SDK. It releases readiness/flush waiters and
+invalidates its event adapter, pending initialization, and lifecycle callbacks.
+Late hydration cannot resurrect events cleared by a newer configuration. Repeated
+privacy clears invalidate intervening queued stores. Logging and listener cleanup
+contain bridge errors. `flush()` handles delivery errors internally and skips
+initialization that has not completed within five seconds; resolution reports the
+attempt finishing, not server acceptance.
+
+These guards cover SDK failures; they cannot prevent operating-system termination
+or crashes inside third-party native plugins.
+
 ## Debug Logging
 
 Enable debug logging to see SDK activity:
@@ -796,3 +826,40 @@ Check the Metro bundler console to see the SDK's debug output as you interact wi
 ## License
 
 MIT
+
+### Android Hermes host safety regression
+
+`tests/native-host` builds an isolated brownfield Android app from the candidate
+RN package and the published JavaScript core installed by its lockfile. The locked host uses
+React Native **0.73.11**, the legacy bridge, Hermes and the real AsyncStorage
+**1.24.0** Java module. It compiles optimized Hermes bytecode, exercises native
+SQLite persistence and actual Android background/resume, then verifies that the
+same host process survives. This does not validate Expo 54 or the new architecture.
+
+The fixture covers twelve configure/destroy cycles, burst captures, mutable and
+cyclic properties, rejected providers/storage/network operations, delivery
+recovery and persisted consent. Analytics delivery uses an offline adapter; fetch
+is blocked and the fixture has no Internet permission. Expected caught SDK error
+logs are allowed; an uncaught exception, unhandled rejection, process death or
+missing pass marker fails the runner. Production Hermes rejection tracking is
+explicitly enabled, and a controlled rejected-promise launch must fail the same
+detector before the SDK workload can pass. CI runs it after unit checks and builds
+on an API 35 emulator using the SDK-installed published core. Local verification
+also covers API 37. Mocked fault injection remains necessary for stalled plugins.
+
+With JDK 17, Android platform/build tools 34 and a booted Android emulator:
+
+```bash
+npm ci
+npm run prepare
+npm ci --ignore-scripts --prefix tests/native-host
+ANDROID_SERIAL=emulator-5554 npm test --prefix tests/native-host
+```
+
+Set `JAVA_HOME` and `ANDROID_HOME` for your local toolchain. The runner installs
+and force-stops only `com.mgm.rnhermeshost`, clears only that fixture's storage and
+sends HOME/resume during its lifecycle check. Generated files and PID-scoped logs
+stay under `tests/native-host/.build-native` and are ignored by Git. Release
+verification must pass against the actual dependency graph installed by `npm ci`.
+For local testing before a core release, build that checkout and set `MGM_JS_DIR`
+to its directory; CI deliberately does not use this candidate override.
