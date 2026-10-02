@@ -1,4 +1,14 @@
+import { MAX_RETAINED_BYTES, ownedSnapshot } from './retention';
+import { NativeTimeoutError, withNativeDeadline } from './native';
 import type { IEventStorage, IExperimentStorage, MGMEvent } from '@mostly-good-metrics/javascript';
+
+// Internal wrapper lifecycle hook; not exported from the package entrypoint.
+const invalidatedStores = new WeakSet<IEventStorage>();
+const invalidateCallbacks = new WeakMap<IEventStorage, () => void>();
+export function invalidateEventStorage(storage: IEventStorage): void {
+  invalidatedStores.add(storage);
+  invalidateCallbacks.get(storage)?.();
+}
 
 const STORAGE_KEY = 'mostlygoodmetrics_events';
 const USER_ID_KEY = 'mostlygoodmetrics_user_id';
@@ -32,29 +42,70 @@ export function getStorageType(): 'persistent' | 'memory' {
 const memoryStorage: Record<string, string> = {};
 // A failed native write must not resurrect stale durable identity or consent.
 const failedWrites = new Set<string>();
-const writeQueues = new Map<string, Promise<void>>();
+type NativeMutation = { value: string | null };
+type PendingWrite = { latest: NativeMutation | null; promise: Promise<void> };
+const writeQueues = new Map<string, PendingWrite>();
+const writeRevisions = new Map<string, number>();
+const quarantinedKeys = new Set<string>();
+const nativeReads = new Map<string, Promise<string | null>>();
+const quarantinedReads = new Set<string>();
 
-async function enqueueWrite(key: string, write: () => Promise<void>): Promise<void> {
-  const previous = writeQueues.get(key) ?? Promise.resolve();
-  const operation = previous.then(write);
-  writeQueues.set(key, operation);
-  try {
-    await operation;
-  } finally {
-    if (writeQueues.get(key) === operation) writeQueues.delete(key);
-  }
+function memoryValue(key: string): string | null {
+  // If native consent cannot be read, stay opted out until an explicit choice.
+  return memoryStorage[key] ?? (key === OPT_OUT_KEY ? 'true' : null);
 }
 
-/**
- * Storage helpers that work with or without AsyncStorage.
- */
-async function getItem(key: string): Promise<string | null> {
-  if (failedWrites.has(key) || writeQueues.has(key)) return memoryStorage[key] ?? null;
-  if (AsyncStorage) {
+function enqueueWrite(key: string, mutation: NativeMutation): Promise<void> {
+  if (quarantinedKeys.has(key)) return Promise.resolve();
+  const existing = writeQueues.get(key);
+  if (existing) {
+    existing.latest = mutation;
+    return existing.promise;
+  }
+  const pending: PendingWrite = { latest: mutation, promise: Promise.resolve() };
+  writeQueues.set(key, pending);
+  pending.promise = Promise.resolve().then(async () => {
     try {
-      return await AsyncStorage.getItem(key);
+      while (pending.latest && !quarantinedKeys.has(key)) {
+        const mutation = pending.latest;
+        pending.latest = null;
+        try {
+          await withNativeDeadline(() => mutation.value === null ? AsyncStorage!.removeItem(key) : AsyncStorage!.setItem(key, mutation.value!));
+          failedWrites.delete(key);
+        } catch (error) {
+          failedWrites.add(key);
+          if (error instanceof NativeTimeoutError) {
+            // The native call may still finish later. Never issue a newer call
+            // that it could overwrite; use process-memory state from now on.
+            quarantinedKeys.add(key);
+            pending.latest = null;
+          }
+        }
+      }
+    } finally {
+      writeQueues.delete(key);
+    }
+  });
+  return pending.promise;
+}
+
+async function getItem(key: string): Promise<string | null> {
+  if (failedWrites.has(key) || writeQueues.has(key) || quarantinedKeys.has(key) || quarantinedReads.has(key)) return memoryValue(key);
+  if (AsyncStorage) {
+    const revision = writeRevisions.get(key) ?? 0;
+    try {
+      let reading = nativeReads.get(key);
+      if (!reading) {
+        reading = withNativeDeadline(() => AsyncStorage!.getItem(key)).catch((error) => {
+          if (error instanceof NativeTimeoutError) quarantinedReads.add(key);
+          throw error;
+        }).finally(() => nativeReads.delete(key));
+        nativeReads.set(key, reading);
+      }
+      const value = await reading;
+      return revision === (writeRevisions.get(key) ?? 0) ? value : memoryValue(key);
     } catch {
-      return memoryStorage[key] ?? null;
+      return memoryValue(key);
     }
   }
   return memoryStorage[key] ?? null;
@@ -62,30 +113,14 @@ async function getItem(key: string): Promise<string | null> {
 
 async function setItem(key: string, value: string): Promise<void> {
   memoryStorage[key] = value;
-  if (AsyncStorage) {
-    await enqueueWrite(key, async () => {
-      try {
-        await AsyncStorage.setItem(key, value);
-        failedWrites.delete(key);
-      } catch {
-        failedWrites.add(key);
-      }
-    });
-  }
+  writeRevisions.set(key, (writeRevisions.get(key) ?? 0) + 1);
+  if (AsyncStorage) await enqueueWrite(key, { value });
 }
 
 async function removeItem(key: string): Promise<void> {
   delete memoryStorage[key];
-  if (AsyncStorage) {
-    await enqueueWrite(key, async () => {
-      try {
-        await AsyncStorage.removeItem(key);
-        failedWrites.delete(key);
-      } catch {
-        failedWrites.add(key);
-      }
-    });
-  }
+  writeRevisions.set(key, (writeRevisions.get(key) ?? 0) + 1);
+  if (AsyncStorage) await enqueueWrite(key, { value: null });
 }
 
 /**
@@ -100,13 +135,25 @@ export class AsyncStorageEventStorage implements IEventStorage {
   // load an empty array from AsyncStorage and clobber one another (dropping
   // all but the last event). Operations run one at a time, in order.
   private queue: Promise<unknown> = Promise.resolve();
+  private storeGeneration = 0;
+  private retainedBytes = 0;
+  private pendingStoreBytes = 0;
+  private countRead: Promise<number> | null = null;
+  private clearOperation: Promise<void> | null = null;
+  private fetchReads = new Map<number, Promise<MGMEvent[]>>();
   private pendingSave: Promise<void> | null = null;
   private resolvePendingSave: (() => void) | null = null;
   private rejectPendingSave: ((error: unknown) => void) | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(maxEvents: number = 10000) {
-    this.maxEvents = Math.max(maxEvents, 100);
+    invalidateCallbacks.set(this, () => {
+      this.storeGeneration += 1;
+      this.cancelPendingSave();
+      this.events = [];
+      this.retainedBytes = 0;
+    });
+    this.maxEvents = Math.min(Math.max(Number.isFinite(maxEvents) ? Math.floor(maxEvents) : 10000, 100), Number.MAX_SAFE_INTEGER);
   }
 
   /**
@@ -126,24 +173,27 @@ export class AsyncStorageEventStorage implements IEventStorage {
   }
 
   private async loadEvents(): Promise<MGMEvent[]> {
+    if (invalidatedStores.has(this)) return [];
     if (this.events !== null) {
       return this.events;
     }
 
     try {
       const stored = await getItem(STORAGE_KEY);
-      if (stored) {
+      if (invalidatedStores.has(this)) return [];
+      this.events = [];
+      if (stored && stored.length * 2 <= MAX_RETAINED_BYTES) {
         const parsed: unknown = JSON.parse(stored);
-        // Persisted values can be damaged or left behind by another SDK
-        // version. Never expose non-arrays or null entries to queue operations.
-        this.events = Array.isArray(parsed)
-          ? parsed.filter((event): event is MGMEvent =>
-              event !== null && typeof event === 'object' &&
-              typeof event.name === 'string' && typeof event.timestamp === 'string'
-            )
-          : [];
-      } else {
-        this.events = [];
+        if (Array.isArray(parsed)) {
+          for (const event of parsed) {
+            if (!event || typeof event !== 'object' || typeof event.name !== 'string' || typeof event.timestamp !== 'string') continue;
+            const snapshot = ownedSnapshot(event as MGMEvent);
+            if (!snapshot) continue;
+            this.events.push(snapshot.value);
+            this.retainedBytes += snapshot.bytes;
+            this.trimEvents();
+          }
+        }
       }
     } catch {
       this.events = [];
@@ -152,7 +202,15 @@ export class AsyncStorageEventStorage implements IEventStorage {
     return this.events;
   }
 
+  private trimEvents(): void {
+    while (this.events && (this.events.length > this.maxEvents || this.retainedBytes + this.pendingStoreBytes > MAX_RETAINED_BYTES)) {
+      const removed = this.events.shift();
+      if (removed) this.retainedBytes -= ownedSnapshot(removed)?.bytes ?? 0;
+    }
+  }
+
   private async saveEvents(): Promise<void> {
+    if (invalidatedStores.has(this)) return;
     await setItem(STORAGE_KEY, JSON.stringify(this.events ?? []));
   }
 
@@ -205,33 +263,51 @@ export class AsyncStorageEventStorage implements IEventStorage {
   }
 
   store(event: MGMEvent): Promise<void> {
+    if (invalidatedStores.has(this)) return Promise.resolve();
+    const snapshot = ownedSnapshot(event);
+    if (!snapshot || this.retainedBytes + this.pendingStoreBytes + snapshot.bytes > MAX_RETAINED_BYTES) return Promise.resolve();
+    this.pendingStoreBytes += snapshot.bytes;
+    const generation = this.storeGeneration;
+    let released = false;
     let save = Promise.resolve();
     const mutation = this.enqueue(async () => {
-      const events = await this.loadEvents();
-      events.push(event);
-
-      // Trim oldest events if we exceed the limit
-      if (events.length > this.maxEvents) {
-        const excess = events.length - this.maxEvents;
-        events.splice(0, excess);
+      try {
+        const events = await this.loadEvents();
+        if (generation !== this.storeGeneration) return;
+        this.pendingStoreBytes -= snapshot.bytes;
+        released = true;
+        events.push(snapshot.value);
+        this.retainedBytes += snapshot.bytes;
+        this.trimEvents();
+        save = this.scheduleSave();
+      } finally {
+        if (!released) this.pendingStoreBytes -= snapshot.bytes;
       }
-
-      save = this.scheduleSave();
     });
     return mutation.then(() => save);
   }
 
-  async fetchEvents(limit: number): Promise<MGMEvent[]> {
-    return this.enqueue(async () => {
+  fetchEvents(limit: number): Promise<MGMEvent[]> {
+    const boundedLimit = Number.isFinite(limit) ? Math.max(0, Math.min(Math.floor(limit), this.maxEvents)) : this.maxEvents;
+    const pending = this.fetchReads.get(boundedLimit);
+    if (pending) return pending;
+    // Bound simultaneous distinct fetch requests while native hydration stalls.
+    if (this.fetchReads.size >= 16) return Promise.resolve([]);
+    const reading = this.enqueue(async () => {
       const events = await this.loadEvents();
-      return events.slice(0, limit);
+      return events.slice(0, boundedLimit).map((event) => ownedSnapshot(event)!.value);
     });
+    this.fetchReads.set(boundedLimit, reading);
+    void reading.then(() => this.fetchReads.delete(boundedLimit), () => this.fetchReads.delete(boundedLimit));
+    return reading;
   }
 
   removeEvents(count: number, clientEventIds?: string[]): Promise<void> {
+    if (invalidatedStores.has(this)) return Promise.resolve();
     let save = Promise.resolve();
     const mutation = this.enqueue(async () => {
       const events = await this.loadEvents();
+      if (invalidatedStores.has(this)) return;
       if (clientEventIds?.length) {
         const sentIds = new Set(clientEventIds.filter(Boolean));
         let idlessEventsToRemove = Math.max(0, count - sentIds.size);
@@ -248,25 +324,38 @@ export class AsyncStorageEventStorage implements IEventStorage {
       } else {
         events.splice(0, count);
       }
+      this.retainedBytes = (this.events ?? []).reduce((bytes, event) => bytes + (ownedSnapshot(event)?.bytes ?? 0), 0);
       save = this.scheduleSave();
     });
     return mutation.then(() => save);
   }
 
-  async eventCount(): Promise<number> {
-    return this.enqueue(async () => {
-      const events = await this.loadEvents();
-      return events.length;
-    });
+  eventCount(): Promise<number> {
+    if (this.countRead) return this.countRead;
+    const reading = this.enqueue(async () => (await this.loadEvents()).length);
+    this.countRead = reading;
+    void reading.then(() => { this.countRead = null; }, () => { this.countRead = null; });
+    return reading;
   }
 
-  async clear(): Promise<void> {
-    return this.enqueue(async () => {
+  clear(): Promise<void> {
+    if (invalidatedStores.has(this)) return Promise.resolve();
+    // Every privacy clear invalidates earlier admitted stores, including calls
+    // queued between two coalesced clears while native hydration is pending.
+    this.storeGeneration += 1;
+    if (this.clearOperation) return this.clearOperation;
+    const clearing = this.enqueue(async () => {
+      if (invalidatedStores.has(this)) return;
       this.cancelPendingSave();
       this.events = [];
+      this.retainedBytes = 0;
       await removeItem(STORAGE_KEY);
     });
+    this.clearOperation = clearing;
+    void clearing.then(() => { this.clearOperation = null; }, () => { this.clearOperation = null; });
+    return clearing;
   }
+
 }
 
 /**
@@ -370,7 +459,9 @@ export const persistence = {
     if (stored === 'false') {
       return false;
     }
-    return null;
+    // A missing value is a new installation; malformed persisted consent is
+    // not permission to collect analytics. Explicit optIn can replace it.
+    return stored === null ? null : true;
   },
 
   /**

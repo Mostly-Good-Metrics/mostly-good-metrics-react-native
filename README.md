@@ -539,18 +539,33 @@ When `trackAppLifecycleEvents` is enabled (default: `true`), the SDK automatical
 
 ## Failure handling
 
-Analytics must not interrupt app behavior. Platform storage failures fall back to
-memory; failed identity/consent writes remain authoritative in memory for the
-current process rather than restoring stale durable values. Damaged persisted event queues are recovered while retaining valid
-events. Lifecycle listener cleanup contains native bridge errors. Debug logging is best-effort even when an
-app replaces the console functions.
+Native storage/device operations have a five-second deadline. Reads are coalesced;
+a timed-out native read uses memory for the rest of the process. Writes are
+coalesced to the latest value. A timed-out write cannot be cancelled, so that key
+also uses memory for the rest of the process rather than risking out-of-order
+durable writes. Failed identity/consent writes remain authoritative in memory.
+Unreadable or malformed native consent stays opted out until an explicit choice;
+a genuinely missing value uses the configured default for a new installation.
 
-Call `destroy()` when tearing down the SDK. Pending initialization and lifecycle
-listeners from that configuration are invalidated; they cannot recreate the client
-after destruction or overwrite a subsequent configuration. `flush()` handles
-delivery errors internally, so it is safe to call without awaiting it. These
-guards cover SDK failures; they cannot prevent operating-system termination or
-crashes inside third-party native plugins.
+`ready(timeoutMs)` covers native initialization and experiment readiness together.
+Before initialization, the SDK retains at most 10,000 calls and 1 MiB of owned
+payload snapshots, dropping oldest calls on overflow. The event adapter caps its
+combined cached and pending payloads at 1 MiB and drops new events that exceed its
+remaining budget. Oversized, cyclic, unreadable, or excessively complex values are
+discarded. Accepted data is copied so later app mutations cannot change queued
+events. Persisted queues larger than 1 MiB are discarded before parsing; smaller
+damaged queues recover valid entries. Count reads and pending clears are coalesced.
+
+Call `destroy()` when tearing down the SDK. It releases readiness/flush waiters and
+invalidates its event adapter, pending initialization, and lifecycle callbacks.
+Late hydration cannot resurrect events cleared by a newer configuration. Repeated
+privacy clears invalidate intervening queued stores. Logging and listener cleanup
+contain bridge errors. `flush()` handles delivery errors internally and skips
+initialization that has not completed within five seconds; resolution reports the
+attempt finishing, not server acceptance.
+
+These guards cover SDK failures; they cannot prevent operating-system termination
+or crashes inside third-party native plugins.
 
 ## Debug Logging
 

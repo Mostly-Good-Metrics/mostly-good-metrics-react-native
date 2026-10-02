@@ -56,6 +56,15 @@ describe('AsyncStorageEventStorage', () => {
     });
   });
 
+  it.each([NaN, Infinity, -Infinity])('uses a bounded default for non-finite storage limits: %p', async (limit) => {
+    const events = Array.from({ length: 3000 }, (_, i) => ({ client_event_id: `id_${i}`, name: `stored_${i}`, timestamp: '2026-01-01T00:00:00Z', user_id: 'test', platform: 'ios' as const, environment: 'test' }));
+    mockAsyncStorage.getItem.mockResolvedValueOnce(JSON.stringify(events));
+    const bounded = new AsyncStorageEventStorage(limit);
+    await bounded.store({ ...events[0]!, name: 'latest' });
+    expect((bounded as unknown as { maxEvents: number }).maxEvents).toBe(10000);
+    await expect(bounded.eventCount()).resolves.toBe(3001);
+  });
+
   describe('store', () => {
     it('stores an event', async () => {
       const event = {
