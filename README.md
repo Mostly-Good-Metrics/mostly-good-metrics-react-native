@@ -826,3 +826,47 @@ Check the Metro bundler console to see the SDK's debug output as you interact wi
 ## License
 
 MIT
+
+### Android Hermes host safety regression
+
+`tests/native-host` builds an isolated brownfield Android app from the candidate
+RN package and a built JS core supplied through `MGM_JS_DIR`. The locked host uses
+React Native **0.73.11**, the legacy bridge, Hermes and the real AsyncStorage
+**1.24.0** Java module. It compiles optimized Hermes bytecode, exercises native
+SQLite persistence and actual Android background/resume, then verifies that the
+same host process survives. This does not validate Expo 54 or the new architecture.
+
+The fixture covers twelve configure/destroy cycles, burst captures, mutable and
+cyclic properties, rejected providers/storage/network operations, delivery
+recovery and persisted consent. Analytics delivery uses an offline adapter; fetch
+is blocked and the fixture has no Internet permission. Expected caught SDK error
+logs are allowed; an uncaught exception, unhandled rejection, process death or
+missing pass marker fails the runner. Production Hermes rejection tracking is
+explicitly enabled, and a controlled rejected-promise launch must fail the same
+detector before the SDK workload can pass. CI runs it after unit checks and builds on
+an API 35 emulator; that fresh CI run is a separate pending gate. Local API 37
+verification passed 122 assertions and 26 offline sends with zero fetch calls,
+including both newly captured lifecycle events and native SQLite evidence. The
+controlled unhandled-promise launch failed the detector as required, then a fresh
+SDK workload process passed. The final runner extends post-pass log observation
+to 2.5 seconds; that delay-only follow-up awaits the API 35 CI run.
+
+With JDK 17, Android platform/build tools 34 and a booted Android emulator:
+
+```bash
+# Build the fixed core checkout first.
+npm ci --prefix /path/to/mostly-good-metrics-js
+npm run build --prefix /path/to/mostly-good-metrics-js
+npm ci
+npm run prepare
+npm ci --ignore-scripts --prefix tests/native-host
+MGM_JS_DIR=/path/to/mostly-good-metrics-js ANDROID_SERIAL=emulator-5554 \
+  npm test --prefix tests/native-host
+```
+
+Set `JAVA_HOME` and `ANDROID_HOME` for your local toolchain. The runner installs
+and force-stops only `com.mgm.rnhermeshost`, clears only that fixture's storage and
+sends HOME/resume during its lifecycle check. Generated files and PID-scoped logs
+stay under `tests/native-host/.build-native` and are ignored by Git. CI pins core
+commit `4e786a51ff53e2422f9caa0b2a3fbfb90d3404b4` until its fix is published and the
+wrapper's dependency floor is updated.

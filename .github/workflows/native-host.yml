@@ -1,0 +1,78 @@
+name: Android Hermes host safety
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-hermes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-host:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Pin the reviewed unpublished fix until the core release and wrapper floor advance.
+      - uses: actions/checkout@v4
+        with:
+          repository: Mostly-Good-Metrics/mostly-good-metrics-js
+          ref: 4e786a51ff53e2422f9caa0b2a3fbfb90d3404b4
+          path: .native-host-core
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tests/native-host/package-lock.json
+            .native-host-core/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Validate and build candidate SDK
+        run: |
+          npm ci
+          npm test -- --runInBand
+          npm run typescript
+          npm run prepare
+      - name: Build fixed core and install locked native fixture
+        run: |
+          npm ci --prefix .native-host-core
+          npm run build --prefix .native-host-core
+          npm ci --ignore-scripts --prefix tests/native-host
+      - name: Install pinned Android build platform
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Optimized Hermes native storage and lifecycle regression
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        env:
+          MGM_JS_DIR: ${{ github.workspace }}/.native-host-core
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: npm test --prefix tests/native-host
+      - name: Upload isolated native host evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-native-hermes-host-safety
+          path: |
+            tests/native-host/.build-native/*.log
+            tests/native-host/.build-native/logcat.txt
+            tests/native-host/.build-native/result.json
+          if-no-files-found: ignore

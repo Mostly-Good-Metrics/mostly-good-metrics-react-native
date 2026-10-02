@@ -1,0 +1,15 @@
+{
+  "name": "mgm-react-native-offline-hermes-host",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.73.11",
+    "@react-native-async-storage/async-storage": "1.24.0",
+    "@react-native/metro-config": "0.73.5",
+    "@react-native/babel-preset": "0.73.21"
+  }
+}
