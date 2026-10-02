@@ -30,11 +30,26 @@ export function getStorageType(): 'persistent' | 'memory' {
  * In-memory fallback storage when AsyncStorage is not available.
  */
 const memoryStorage: Record<string, string> = {};
+// A failed native write must not resurrect stale durable identity or consent.
+const failedWrites = new Set<string>();
+const writeQueues = new Map<string, Promise<void>>();
+
+async function enqueueWrite(key: string, write: () => Promise<void>): Promise<void> {
+  const previous = writeQueues.get(key) ?? Promise.resolve();
+  const operation = previous.then(write);
+  writeQueues.set(key, operation);
+  try {
+    await operation;
+  } finally {
+    if (writeQueues.get(key) === operation) writeQueues.delete(key);
+  }
+}
 
 /**
  * Storage helpers that work with or without AsyncStorage.
  */
 async function getItem(key: string): Promise<string | null> {
+  if (failedWrites.has(key) || writeQueues.has(key)) return memoryStorage[key] ?? null;
   if (AsyncStorage) {
     try {
       return await AsyncStorage.getItem(key);
@@ -48,22 +63,28 @@ async function getItem(key: string): Promise<string | null> {
 async function setItem(key: string, value: string): Promise<void> {
   memoryStorage[key] = value;
   if (AsyncStorage) {
-    try {
-      await AsyncStorage.setItem(key, value);
-    } catch {
-      // Fall back to memory storage (already set above)
-    }
+    await enqueueWrite(key, async () => {
+      try {
+        await AsyncStorage.setItem(key, value);
+        failedWrites.delete(key);
+      } catch {
+        failedWrites.add(key);
+      }
+    });
   }
 }
 
 async function removeItem(key: string): Promise<void> {
   delete memoryStorage[key];
   if (AsyncStorage) {
-    try {
-      await AsyncStorage.removeItem(key);
-    } catch {
-      // Already removed from memory
-    }
+    await enqueueWrite(key, async () => {
+      try {
+        await AsyncStorage.removeItem(key);
+        failedWrites.delete(key);
+      } catch {
+        failedWrites.add(key);
+      }
+    });
   }
 }
 
@@ -112,7 +133,15 @@ export class AsyncStorageEventStorage implements IEventStorage {
     try {
       const stored = await getItem(STORAGE_KEY);
       if (stored) {
-        this.events = JSON.parse(stored) as MGMEvent[];
+        const parsed: unknown = JSON.parse(stored);
+        // Persisted values can be damaged or left behind by another SDK
+        // version. Never expose non-arrays or null entries to queue operations.
+        this.events = Array.isArray(parsed)
+          ? parsed.filter((event): event is MGMEvent =>
+              event !== null && typeof event === 'object' &&
+              typeof event.name === 'string' && typeof event.timestamp === 'string'
+            )
+          : [];
       } else {
         this.events = [];
       }

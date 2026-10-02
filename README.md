@@ -537,6 +537,21 @@ When `trackAppLifecycleEvents` is enabled (default: `true`), the SDK automatical
   - iOS: Always "Apple"
   - Android: From `Build.MANUFACTURER` (e.g., "Google", "Samsung")
 
+## Failure handling
+
+Analytics must not interrupt app behavior. Platform storage failures fall back to
+memory; failed identity/consent writes remain authoritative in memory for the
+current process rather than restoring stale durable values. Damaged persisted event queues are recovered while retaining valid
+events. Lifecycle listener cleanup contains native bridge errors. Debug logging is best-effort even when an
+app replaces the console functions.
+
+Call `destroy()` when tearing down the SDK. Pending initialization and lifecycle
+listeners from that configuration are invalidated; they cannot recreate the client
+after destruction or overwrite a subsequent configuration. `flush()` handles
+delivery errors internally, so it is safe to call without awaiting it. These
+guards cover SDK failures; they cannot prevent operating-system termination or
+crashes inside third-party native plugins.
+
 ## Debug Logging
 
 Enable debug logging to see SDK activity:

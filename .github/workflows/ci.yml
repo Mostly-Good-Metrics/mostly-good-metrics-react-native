@@ -40,3 +40,6 @@ jobs:
 
       - name: Build
         run: npm run prepare
+
+      - name: Built package host crash regressions
+        run: node --unhandled-rejections=strict scripts/crash-safety.cjs rn
