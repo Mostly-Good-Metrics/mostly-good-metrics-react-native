@@ -174,7 +174,7 @@ try {
     join(android, "app/build/outputs/apk/debug/app-debug.apk"),
   ]);
   // Stop only our fixture so each launch starts a fresh JS/Hermes runtime.
-  const launchHost = async (rejectionProbe) => {
+  const launchHost = async (rejectionProbe, evidencePrefix) => {
     device(["shell", "am", "force-stop", appId]);
     const since = device(["shell", "date", "'+%m-%d %H:%M:%S.000'"]);
     if (!/^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.000$/.test(since))
@@ -198,7 +198,7 @@ try {
     }
     if (!/^\d+$/.test(pid))
       throw new Error(`Fixture did not start with one host process: ${pid}`);
-    return { pid, since };
+    return { pid, since, evidencePrefix };
   };
   const readHostLog = (host, filename) => {
     const current = device(["shell", "pidof", appId], { allowFailure: true });
@@ -215,11 +215,11 @@ try {
       // scoped to our fixture; command output remains capped by maxBuffer.
       for (const [name, args] of [
         [
-          "host-exit-info.log",
+          `${host.evidencePrefix}-exit-info.log`,
           ["shell", "dumpsys", "activity", "exit-info", appId],
         ],
         [
-          "host-crash.log",
+          `${host.evidencePrefix}-crash.log`,
           [
             "logcat",
             "-d",
@@ -256,108 +256,132 @@ try {
         `Native host error: ${text.match(/^.*(?:MGM_RN_FAIL|MGM_RN_HOST_ERROR|Unhandled|FATAL EXCEPTION|Fatal signal).*$/im)?.[0]}`,
       );
   };
-  // Prove that the same strict detector rejects an intentionally unhandled
-  // promise in this production Hermes bundle before accepting the SDK run.
-  const probe = await launchHost(true);
-  let rejectionDetectorVerified = false;
-  const probeDeadline = Date.now() + 15000;
-  while (Date.now() < probeDeadline) {
-    const text = readHostLog(probe, "rejection-probe.log");
-    try {
-      assertNoHostError(text);
-    } catch (error) {
-      if (
-        !String(error).includes(
-          "MGM_RN_HOST_ERROR unhandled rejection: Error: MGM_RN_REJECTION_DETECTOR_PROBE",
+  // Repeat the full workload with the same built APK. These are independent
+  // launch pairs, never retries: any failure terminates the run immediately.
+  const launchResults = [];
+  for (let pair = 1; pair <= 5; pair++) {
+    const phase = `launch-${pair}`;
+    // Prove that the same strict detector rejects an intentionally unhandled
+    // promise in this production Hermes bundle before accepting the SDK run.
+    const probe = await launchHost(true, `${phase}-negative`);
+    let rejectionDetectorVerified = false;
+    const probeDeadline = Date.now() + 15000;
+    while (Date.now() < probeDeadline) {
+      const text = readHostLog(probe, `${phase}-rejection-probe.log`);
+      try {
+        assertNoHostError(text);
+      } catch (error) {
+        if (
+          !String(error).includes(
+            "MGM_RN_HOST_ERROR unhandled rejection: Error: MGM_RN_REJECTION_DETECTOR_PROBE",
+          )
         )
-      )
-        throw error;
-      rejectionDetectorVerified = true;
-      break;
+          throw error;
+        rejectionDetectorVerified = true;
+        break;
+      }
+      await sleep(100);
     }
-    await sleep(100);
+    if (!rejectionDetectorVerified)
+      throw new Error(
+        "Strict detector did not reject the controlled Hermes promise rejection",
+      );
+    console.log(
+      `PID ${probe.pid}: controlled unhandled rejection rejected by native runner`,
+    );
+    const host = await launchHost(false, `${phase}-positive`);
+    if (host.pid === probe.pid)
+      throw new Error(`Launch pair reused the negative process: ${host.pid}`);
+    const { pid } = host;
+    const readLog = () => {
+      const text = readHostLog(host, `${phase}-positive.log`);
+      assertNoHostError(text);
+      return text;
+    };
+    const waitFor = async (marker) => {
+      const deadline = Date.now() + 60000;
+      while (Date.now() < deadline) {
+        const text = readLog();
+        if (text.includes(marker)) return text;
+        await sleep(250);
+      }
+      throw new Error(
+        `No ${marker} within 60s; see ${join(output, `${phase}-positive.log`)}`,
+      );
+    };
+    await waitFor("MGM_RN_READY_LIFECYCLE");
+    console.log(
+      `PID ${pid}: native capture/recovery passed; sending HOME and resuming fixture`,
+    );
+    device(["shell", "input", "keyevent", "KEYCODE_HOME"]);
+    await waitFor("MGM_RN_APPSTATE background");
+    device(["shell", "am", "start", "-n", `${appId}/.MainActivity`]);
+    const text = await waitFor("MGM_RN_PASS");
+    const result = JSON.parse(text.match(/MGM_RN_PASS (\{[^\n]+\})/)[1]);
+    if (
+      !result.pass ||
+      !result.hermes ||
+      !result.nativeStorage ||
+      result.checks < 122 ||
+      result.lifecycle.join(",") !== "background,active" ||
+      !result.lifecycleEvents.includes("$app_backgrounded") ||
+      !result.lifecycleEvents.includes("$app_opened")
+    )
+      throw new Error(
+        `Incomplete native smoke result: ${JSON.stringify(result)}`,
+      );
+    await sleep(2500);
+    readLog(); // Cover the rejection tracker's two-second grace after success.
+    const database = spawnSync(
+      adb,
+      ["-s", serial, "exec-out", "run-as", appId, "cat", "databases/RKStorage"],
+      { timeout: 15000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    if (database.status !== 0)
+      throw new Error("Cannot read fixture native SQLite evidence");
+    writeFileSync(
+      join(output, `${phase}-native-storage.sqlite`),
+      database.stdout,
+    );
+    command(
+      "python3",
+      [
+        "-c",
+        "import sqlite3,json,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);r=json.loads(c.execute('SELECT value FROM catalystLocalStorage WHERE key=?',('mgm_native_host_result',)).fetchone()[0]);assert r['pass'] and r['hermes'] and r['nativeStorage'];print(r)",
+        join(output, `${phase}-native-storage.sqlite`),
+      ],
+      { log: `${phase}-sqlite-result.log` },
+    );
+    launchResults.push({
+      ...result,
+      phase,
+      rejectionDetectorVerified,
+      negativePid: probe.pid,
+      pid,
+      abi,
+      reactNative: "0.73.11",
+      asyncStorage: "1.24.0",
+    });
+    console.log(
+      `PASS ${phase}: actual Android/Hermes host ${JSON.stringify(result)}`,
+    );
   }
-  if (!rejectionDetectorVerified)
-    throw new Error(
-      "Strict detector did not reject the controlled Hermes promise rejection",
-    );
-  console.log(
-    `PID ${probe.pid}: controlled unhandled rejection rejected by native runner`,
-  );
-  const host = await launchHost(false);
-  const { pid } = host;
-  const readLog = () => {
-    const text = readHostLog(host, "logcat.txt");
-    assertNoHostError(text);
-    return text;
-  };
-  const waitFor = async (marker) => {
-    const deadline = Date.now() + 60000;
-    while (Date.now() < deadline) {
-      const text = readLog();
-      if (text.includes(marker)) return text;
-      await sleep(250);
-    }
-    throw new Error(
-      `No ${marker} within 60s; see ${join(output, "logcat.txt")}`,
-    );
-  };
-  await waitFor("MGM_RN_READY_LIFECYCLE");
-  console.log(
-    `PID ${pid}: native capture/recovery passed; sending HOME and resuming fixture`,
-  );
-  device(["shell", "input", "keyevent", "KEYCODE_HOME"]);
-  await waitFor("MGM_RN_APPSTATE background");
-  device(["shell", "am", "start", "-n", `${appId}/.MainActivity`]);
-  const text = await waitFor("MGM_RN_PASS");
-  const result = JSON.parse(text.match(/MGM_RN_PASS (\{[^\n]+\})/)[1]);
-  if (
-    !result.pass ||
-    !result.hermes ||
-    !result.nativeStorage ||
-    result.checks < 122 ||
-    result.lifecycle.join(",") !== "background,active" ||
-    !result.lifecycleEvents.includes("$app_backgrounded") ||
-    !result.lifecycleEvents.includes("$app_opened")
-  )
-    throw new Error(
-      `Incomplete native smoke result: ${JSON.stringify(result)}`,
-    );
-  await sleep(2500);
-  readLog(); // Cover the rejection tracker's two-second grace after success.
-  const database = spawnSync(
-    adb,
-    ["-s", serial, "exec-out", "run-as", appId, "cat", "databases/RKStorage"],
-    { timeout: 15000, maxBuffer: 4 * 1024 * 1024 },
-  );
-  if (database.status !== 0)
-    throw new Error("Cannot read fixture native SQLite evidence");
-  writeFileSync(join(output, "native-storage.sqlite"), database.stdout);
-  command(
-    "python3",
-    [
-      "-c",
-      "import sqlite3,json,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);r=json.loads(c.execute('SELECT value FROM catalystLocalStorage WHERE key=?',('mgm_native_host_result',)).fetchone()[0]);assert r['pass'] and r['hermes'] and r['nativeStorage'];print(r)",
-      join(output, "native-storage.sqlite"),
-    ],
-    { log: "sqlite-result.log" },
-  );
   writeFileSync(
     join(output, "result.json"),
     JSON.stringify(
       {
-        ...result,
-        rejectionDetectorVerified,
-        pid,
-        abi,
-        reactNative: "0.73.11",
-        asyncStorage: "1.24.0",
+        pass: true,
+        launchPairs: launchResults.length,
+        javascriptCore: corePackage.version,
+        launches: launchResults,
       },
       null,
       2,
     ),
   );
-  console.log(`PASS actual Android/Hermes host: ${JSON.stringify(result)}`);
+  console.log(
+    `PASS all ${launchResults.length} independent Android/Hermes launch pairs`,
+  );
 } catch (error) {
   console.error(error.stack || error);
   process.exitCode = 1;
