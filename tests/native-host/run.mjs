@@ -32,10 +32,18 @@ const appId = "com.mgm.rnhermeshost";
 const sleep = (milliseconds) =>
   new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 mkdirSync(output, { recursive: true });
+// A failed rerun must never retain a previous all-pairs success summary.
+rmSync(join(output, "result.json"), { force: true });
 function command(
   binary,
   args,
-  { cwd = output, log, timeout = 180000, allowFailure = false } = {},
+  {
+    cwd = output,
+    log,
+    timeout = 180000,
+    allowFailure = false,
+    acceptEmptyExitCodeOne = false,
+  } = {},
 ) {
   const result = spawnSync(binary, args, {
     cwd,
@@ -44,9 +52,38 @@ function command(
     encoding: "utf8",
     env: process.env,
   });
-  const text = (result.stdout || "") + (result.stderr || "");
-  if (log) writeFileSync(join(output, log), text);
-  if (!allowFailure && (result.error || result.status !== 0))
+  const stdout = result.stdout || "";
+  const stderr = result.stderr || "";
+  const text = stdout + stderr;
+  if (log) {
+    // Preserve partial output and the actual transport/exit result before any
+    // assertion throws. Every caller-supplied log path is inside our fixture.
+    writeFileSync(join(output, log), text);
+    writeFileSync(
+      join(output, `${log}.command.log`),
+      JSON.stringify(
+        {
+          command: [binary, ...args],
+          status: result.status,
+          signal: result.signal,
+          error: result.error
+            ? { message: result.error.message, code: result.error.code }
+            : null,
+          stdout,
+          stderr,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+  const acceptedExit =
+    result.status === 0 ||
+    (acceptEmptyExitCodeOne &&
+      result.status === 1 &&
+      !stdout.trim() &&
+      !stderr.trim());
+  if (!allowFailure && (result.error || !acceptedExit))
     throw new Error(
       `${binary} failed (${result.status}): ${result.error || text.slice(-6000)}`,
     );
@@ -175,80 +212,86 @@ try {
   ]);
   // Stop only our fixture so each launch starts a fresh JS/Hermes runtime.
   const launchHost = async (rejectionProbe, evidencePrefix) => {
-    device(["shell", "am", "force-stop", appId]);
+    device(["shell", "am", "force-stop", appId], {
+      log: `${evidencePrefix}-force-stop.log`,
+    });
     const since = device(["shell", "date", "'+%m-%d %H:%M:%S.000'"]);
     if (!/^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.000$/.test(since))
       throw new Error(`Cannot establish fresh device log timestamp: ${since}`);
     device(["shell", "input", "keyevent", "KEYCODE_WAKEUP"]);
     device(["shell", "wm", "dismiss-keyguard"]);
-    device([
-      "shell",
-      "am",
-      "start",
-      "-n",
-      `${appId}/.MainActivity`,
-      "--ez",
-      "mgmRejectionProbe",
-      String(rejectionProbe),
-    ]);
+    device(
+      [
+        "shell",
+        "am",
+        "start",
+        "-n",
+        `${appId}/.MainActivity`,
+        "--ez",
+        "mgmRejectionProbe",
+        String(rejectionProbe),
+      ],
+      { log: `${evidencePrefix}-start.log` },
+    );
     let pid = "";
     for (let attempt = 0; attempt < 20 && !pid; attempt++) {
-      pid = device(["shell", "pidof", appId], { allowFailure: true });
+      pid = readPid(evidencePrefix);
       if (!pid) await sleep(250);
     }
     if (!/^\d+$/.test(pid))
       throw new Error(`Fixture did not start with one host process: ${pid}`);
     return { pid, since, evidencePrefix };
   };
-  const readHostLog = (host, filename) => {
-    const current = device(["shell", "pidof", appId], { allowFailure: true });
-    const text = device([
-      "logcat",
-      "-d",
-      `--pid=${host.pid}`,
-      "-T",
-      host.since,
-    ]);
-    writeFileSync(join(output, filename), text);
-    if (current !== host.pid) {
-      // Retain the old process's evidence before failing. Both diagnostics are
-      // scoped to our fixture; command output remains capped by maxBuffer.
-      for (const [name, args] of [
-        [
-          `${host.evidencePrefix}-exit-info.log`,
-          ["shell", "dumpsys", "activity", "exit-info", appId],
-        ],
-        [
-          `${host.evidencePrefix}-crash.log`,
-          [
-            "logcat",
-            "-d",
-            "-b",
-            "crash",
-            `--pid=${host.pid}`,
-            "-T",
-            host.since,
-          ],
-        ],
-      ]) {
+  const readPid = (evidencePrefix) => {
+    const pid = device(["shell", "pidof", appId], {
+      acceptEmptyExitCodeOne: true,
+      log: `${evidencePrefix}-pidof.log`,
+    });
+    if (pid && !/^\d+$/.test(pid))
+      throw new Error(`Invalid fixture PID query output: ${pid}`);
+    return pid;
+  };
+  const collectHostDiagnostics = (host) => {
+    for (const [name, args] of [
+      [
+        `${host.evidencePrefix}-exit-info.log`,
+        ["shell", "dumpsys", "activity", "exit-info", appId],
+      ],
+      [
+        `${host.evidencePrefix}-crash.log`,
+        ["logcat", "-d", "-b", "crash", `--pid=${host.pid}`, "-T", host.since],
+      ],
+    ]) {
+      try {
+        device(args, { allowFailure: true, log: name });
+      } catch (error) {
         try {
-          const evidence = device(args, { allowFailure: true });
-          writeFileSync(
-            join(output, name),
-            `Expected PID ${host.pid}, observed ${current || "none"}\n${evidence}`,
-          );
-        } catch (error) {
           writeFileSync(
             join(output, name),
             `Diagnostic collection failed: ${String(error)}`,
           );
+        } catch {
+          // A best-effort diagnostic must never replace the original failure.
         }
       }
-      throw new Error(
-        `Host died or restarted: expected PID ${host.pid}, got ${current}`,
-      );
     }
-    return text;
+  };
+  const readHostLog = (host, filename) => {
+    try {
+      const current = readPid(host.evidencePrefix);
+      const text = device(
+        ["logcat", "-d", `--pid=${host.pid}`, "-T", host.since],
+        { log: filename },
+      );
+      if (current !== host.pid)
+        throw new Error(
+          `Host died or restarted: expected PID ${host.pid}, got ${current}`,
+        );
+      return text;
+    } catch (error) {
+      collectHostDiagnostics(host);
+      throw error;
+    }
   };
   const assertNoHostError = (text) => {
     if (failPattern.test(text))
