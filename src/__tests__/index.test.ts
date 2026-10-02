@@ -664,6 +664,16 @@ describe('MostlyGoodMetrics React Native SDK', () => {
     });
 
     describe('ready', () => {
+      let clock: jest.SpyInstance<number, []>;
+
+      beforeEach(() => {
+        clock = jest.spyOn(Date, 'now').mockReturnValue(1000);
+      });
+
+      afterEach(() => {
+        clock.mockRestore();
+      });
+
       it('should call ready on the JS SDK', async () => {
         mockReady.mockResolvedValue(undefined);
 
@@ -686,6 +696,19 @@ describe('MostlyGoodMetrics React Native SDK', () => {
         await MostlyGoodMetrics.ready(1234);
 
         expect(mockReady).toHaveBeenCalledWith(1234);
+      });
+
+      it.each([
+        [undefined, 4975],
+        [1234, 1209],
+      ])('should subtract elapsed time from the %p timeout', async (timeout, remaining) => {
+        mockReady.mockResolvedValue(undefined);
+        clock.mockReturnValueOnce(1000).mockReturnValue(1025);
+
+        await MostlyGoodMetrics.ready(timeout);
+
+        expect(mockReady).toHaveBeenCalledTimes(1);
+        expect(mockReady).toHaveBeenCalledWith(remaining);
       });
 
       it('should resolve when SDK is ready', async () => {
